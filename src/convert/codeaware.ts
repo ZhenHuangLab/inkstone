@@ -12,7 +12,7 @@ export function mapLinesOutsideFencedCode(text: string, lineFn: (line: string) =
   let fence: string | null = null
   return text
     .split('\n')
-    .map(line => {
+    .map((line) => {
       if (fence) {
         const close = FENCE_CLOSE.exec(line)
         if (close && close[1]!.charAt(0) === fence.charAt(0) && close[1]!.length >= fence.length) {

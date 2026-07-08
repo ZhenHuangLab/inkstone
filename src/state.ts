@@ -92,5 +92,5 @@ export function selectChanged<T extends { id: string; update_time?: string | num
   items: readonly T[],
   wm: Watermark,
 ): T[] {
-  return items.filter(i => wm[i.id] !== String(i.update_time ?? ''))
+  return items.filter((i) => wm[i.id] !== String(i.update_time ?? ''))
 }

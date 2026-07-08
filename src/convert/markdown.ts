@@ -44,28 +44,31 @@ export function conversationToMarkdown(conv: ConversationDetail, fallbackId = ''
   const messages = linearize(conv)
   const model =
     conv.default_model_slug ??
-    messages.find(m => m.author.role === 'assistant' && m.metadata?.model_slug)?.metadata?.model_slug
+    messages.find((m) => m.author.role === 'assistant' && m.metadata?.model_slug)?.metadata?.model_slug
 
   const ctx: RenderCtx = { sources: [], assets: [] }
   const turns = groupTurns(messages)
   let body = turns
-    .map(t => renderTurn(t, ctx))
+    .map((t) => renderTurn(t, ctx))
     .filter((s): s is string => s != null)
     .join('\n\n')
 
   const sources = dedupeSources(ctx.sources)
   if (sources.length > 0) {
-    body += `\n\n# Sources\n\n${sources.map(s => `- [${escapeLinkLabel(s.title)}](${s.url})`).join('\n')}`
+    body += `\n\n# Sources\n\n${sources.map((s) => `- [${escapeLinkLabel(s.title)}](${s.url})`).join('\n')}`
   }
 
   // Branch · 对话：链接回父对话的导出文件（文件名规则可预测），Obsidian 图谱直接连起来
-  const branchMeta = messages.map(m => m.metadata).find(md => md?.branching_from_conversation_id)
+  const branchMeta = messages.map((m) => m.metadata).find((md) => md?.branching_from_conversation_id)
   const branchedFrom = branchMeta
-    ? filenameFor(branchMeta.branching_from_conversation_title ?? '', branchMeta.branching_from_conversation_id!).replace(/\.md$/, '')
+    ? filenameFor(
+        branchMeta.branching_from_conversation_title ?? '',
+        branchMeta.branching_from_conversation_id!,
+      ).replace(/\.md$/, '')
     : null
 
   // 收尾排版：正文里 3 连以上空行压成 1 个空行（代码块内不动）
-  const tidied = mapTextSegmentsOutsideCode(body, s => s.replace(/\n{3,}/g, '\n\n'))
+  const tidied = mapTextSegmentsOutsideCode(body, (s) => s.replace(/\n{3,}/g, '\n\n'))
 
   const fm = [
     '---',
@@ -76,7 +79,9 @@ export function conversationToMarkdown(conv: ConversationDetail, fallbackId = ''
     `updated: ${toIso(conv.update_time)}`,
     model ? `model: ${model}` : null,
     branchedFrom ? `branched_from: ${yamlQuote(`[[${branchedFrom}]]`)}` : null,
-    branchMeta ? `branched_from_url: https://chatgpt.com/c/${branchMeta.branching_from_conversation_id}` : null,
+    branchMeta
+      ? `branched_from_url: https://chatgpt.com/c/${branchMeta.branching_from_conversation_id}`
+      : null,
     'tags:',
     '  - chatgpt',
     '---',
@@ -105,7 +110,7 @@ export function sanitizeName(name: string): string {
 
 function renderTurn(turn: Turn, ctx: RenderCtx): string | null {
   const rendered = turn.messages
-    .map(m => renderMessage(m, ctx))
+    .map((m) => renderMessage(m, ctx))
     .filter((s): s is string => s != null && s.trim() !== '')
   if (rendered.length === 0) return null
   const heading = turn.role === 'user' ? '# User' : '# ChatGPT'
@@ -166,12 +171,12 @@ function renderMessage(msg: Message, ctx: RenderCtx): string | null {
   }
 
   // 用户上传的附件（图片已在正文里内联的不重复列出）
-  const attachments = (msg.metadata?.attachments ?? []).filter(a => a?.id && !inlineImageIds.has(a.id))
+  const attachments = (msg.metadata?.attachments ?? []).filter((a) => a?.id && !inlineImageIds.has(a.id))
   if (attachments.length > 0) {
-    blocks.push(attachments.map(a => `- ${registerFileAsset(a, ctx)}`).join('\n'))
+    blocks.push(attachments.map((a) => `- ${registerFileAsset(a, ctx)}`).join('\n'))
   }
 
-  const out = blocks.filter(s => s.trim() !== '').join('\n\n')
+  const out = blocks.filter((s) => s.trim() !== '').join('\n\n')
   return out === '' ? null : out
 }
 
@@ -181,13 +186,17 @@ function renderProse(raw: string, refs: ContentReference[] | undefined, ctx: Ren
   return demoteHeadings(convertMath(text))
 }
 
-function renderThoughts(c: MessageContent, refs: ContentReference[] | undefined, ctx: RenderCtx): string | null {
+function renderThoughts(
+  c: MessageContent,
+  refs: ContentReference[] | undefined,
+  ctx: RenderCtx,
+): string | null {
   const blocks = (c.thoughts ?? [])
-    .map(t => {
+    .map((t) => {
       const head = t.summary?.trim() ? `**${t.summary.trim()}**\n\n` : ''
       return head + renderProse(t.content ?? '', refs, ctx)
     })
-    .filter(s => s.trim() !== '')
+    .filter((s) => s.trim() !== '')
   if (blocks.length === 0) return null
   return callout('quote', '思考过程', blocks.join('\n\n'), true)
 }
@@ -247,7 +256,7 @@ function callout(type: string, title: string, body: string, folded = false): str
   const head = `> [!${type}]${folded ? '-' : ''} ${title}`
   const quoted = body
     .split('\n')
-    .map(l => (l === '' ? '>' : `> ${l}`))
+    .map((l) => (l === '' ? '>' : `> ${l}`))
     .join('\n')
   return `${head}\n${quoted}`
 }

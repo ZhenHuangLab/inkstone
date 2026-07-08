@@ -1,9 +1,4 @@
-import type {
-  ConversationDetail,
-  ConversationListItem,
-  ConversationListPage,
-  SessionResponse,
-} from './types'
+import type { ConversationDetail, ConversationListItem, ConversationListPage, SessionResponse } from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -26,7 +21,7 @@ export interface CancelToken {
   cancelled: boolean
 }
 
-export const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
+export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 export const jitter = (base: number, spread = base): number => base + Math.random() * spread
 
 export function ensureAlive(cancel?: CancelToken): void {
@@ -178,7 +173,11 @@ export async function fetchConversation(
   id: string,
   cancel?: CancelToken,
 ): Promise<ConversationDetail> {
-  const res = await backoffFetch(`${location.origin}/backend-api/conversation/${id}`, { headers: auth(token) }, cancel)
+  const res = await backoffFetch(
+    `${location.origin}/backend-api/conversation/${id}`,
+    { headers: auth(token) },
+    cancel,
+  )
   return (await res.json()) as ConversationDetail
 }
 
@@ -193,7 +192,11 @@ export async function resolveFileDownload(
   fileId: string,
   cancel?: CancelToken,
 ): Promise<FileDownloadTarget> {
-  const res = await backoffFetch(`${location.origin}/backend-api/files/${fileId}/download`, { headers: auth(token) }, cancel)
+  const res = await backoffFetch(
+    `${location.origin}/backend-api/files/${fileId}/download`,
+    { headers: auth(token) },
+    cancel,
+  )
   const data = (await res.json()) as { status?: string; download_url?: string }
   if (!data.download_url) throw new Error(`files/${fileId}/download 未返回 download_url`)
   let filename: string | null = null

@@ -5,7 +5,7 @@ import { mapLinesOutsideFencedCode } from './codeaware'
  * 把最高级标题让给 `# User` / `# ChatGPT` 作为对话轮次分隔。
  */
 export function demoteHeadings(text: string, depth = 1): string {
-  return mapLinesOutsideFencedCode(text, line => {
+  return mapLinesOutsideFencedCode(text, (line) => {
     // ATX 标题要求 # 后带空格或行尾；#hashtag 不是标题
     const m = /^( {0,3})(#{1,6})([ \t].*|)$/.exec(line)
     if (!m) return line

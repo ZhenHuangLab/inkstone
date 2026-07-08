@@ -43,7 +43,7 @@ describe('selectChanged 增量筛选', () => {
   ]
 
   test('水位线为空 → 全部要导', () => {
-    expect(selectChanged(items, {}).map(i => i.id)).toEqual(['a', 'b', 'c', 'd'])
+    expect(selectChanged(items, {}).map((i) => i.id)).toEqual(['a', 'b', 'c', 'd'])
   })
 
   test('一致的跳过，变化的和新增的保留', () => {
@@ -52,7 +52,7 @@ describe('selectChanged 增量筛选', () => {
       b: '2026-06-30T00:00:00Z', // 有更新 → 保留
       d: '1751500000.5', // 数字时间戳字符串化后一致 → 跳过
     }
-    expect(selectChanged(items, wm).map(i => i.id)).toEqual(['b', 'c'])
+    expect(selectChanged(items, wm).map((i) => i.id)).toEqual(['b', 'c'])
   })
 
   test('update_time 缺失的对话与空串水位线视为一致', () => {

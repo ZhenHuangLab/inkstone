@@ -44,7 +44,7 @@ export function isVisible(msg: Message): boolean {
   if (ct === 'text' || ct === 'multimodal_text') {
     const parts = c.parts ?? []
     if (parts.length === 0) return false
-    if (parts.every(p => typeof p === 'string' && p.trim() === '')) return false
+    if (parts.every((p) => typeof p === 'string' && p.trim() === '')) return false
   }
   return true
 }

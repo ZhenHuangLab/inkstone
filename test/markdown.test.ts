@@ -131,13 +131,13 @@ describe('附件与引用（P2）', () => {
 
   test('图片 part → 占位符 + assets 登记', () => {
     expect(result.markdown).toContain('%%GEXPORT-ASSET-file_img123%%')
-    expect(result.assets.some(a => a.fileId === 'file_img123' && a.kind === 'image')).toBe(true)
+    expect(result.assets.some((a) => a.fileId === 'file_img123' && a.kind === 'image')).toBe(true)
   })
 
   test('上传附件登记；已内联的图片不重复列出', () => {
     expect(result.markdown).toContain('%%GEXPORT-ASSET-file_doc456%%')
     expect(result.markdown.split('%%GEXPORT-ASSET-file_img123%%').length - 1).toBe(1)
-    expect(result.assets.filter(a => a.fileId === 'file_img123')).toHaveLength(1)
+    expect(result.assets.filter((a) => a.fileId === 'file_img123')).toHaveLength(1)
   })
 
   test('引用 → 行内链接 + 文末 Sources', () => {
@@ -184,7 +184,9 @@ describe('Branch 对话', () => {
 
   test('frontmatter 链接回父对话的导出文件', () => {
     expect(markdown).toContain('branched_from: "[[原对话标题 ~aaaaaaaa]]"')
-    expect(markdown).toContain('branched_from_url: https://chatgpt.com/c/aaaaaaaa-1111-0000-0000-000000000000')
+    expect(markdown).toContain(
+      'branched_from_url: https://chatgpt.com/c/aaaaaaaa-1111-0000-0000-000000000000',
+    )
   })
 })
 

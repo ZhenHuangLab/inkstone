@@ -54,8 +54,10 @@ function renderRef(ref: ContentReference, sources: SourceLink[]): string {
     case 'grouped_webpages_model_predicted': {
       const items = (ref.items?.length ? ref.items : ref.fallback_items) ?? []
       const links = items
-        .filter((i): i is ContentReferenceItem & { url: string } => typeof i?.url === 'string' && i.url !== '')
-        .map(i => {
+        .filter(
+          (i): i is ContentReferenceItem & { url: string } => typeof i?.url === 'string' && i.url !== '',
+        )
+        .map((i) => {
           const title = (i.title ?? '').trim() || i.url
           sources.push({ title, url: i.url })
           const label = (i.attribution ?? '').trim() || hostOf(i.url) || title

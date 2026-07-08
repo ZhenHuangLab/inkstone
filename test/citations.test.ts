@@ -61,7 +61,9 @@ describe('restoreCitations', () => {
 
   test('网页引用 → 行内链接 + sources 收集', () => {
     const { text, sources } = restoreCitations(`官方文档有说明。${webRef.matched_text}`, [webRef])
-    expect(text).toBe('官方文档有说明。（[OpenAI Developers](https://developers.openai.com/codex/guides/agents-md)）')
+    expect(text).toBe(
+      '官方文档有说明。（[OpenAI Developers](https://developers.openai.com/codex/guides/agents-md)）',
+    )
     expect(sources).toEqual([
       {
         title: 'Custom instructions with AGENTS.md – Codex | OpenAI Developers',
@@ -82,7 +84,9 @@ describe('restoreCitations', () => {
 
   test('同一标记多次出现全部替换', () => {
     const { text } = restoreCitations(`A${fileRef.matched_text}B${fileRef.matched_text}`, [fileRef])
-    expect(text).toBe('A *(引用文件: 实现方案(基础设施与阶段1-2).md)*B *(引用文件: 实现方案(基础设施与阶段1-2).md)*')
+    expect(text).toBe(
+      'A *(引用文件: 实现方案(基础设施与阶段1-2).md)*B *(引用文件: 实现方案(基础设施与阶段1-2).md)*',
+    )
   })
 
   test('匹配不上的标记兜底剥离', () => {
