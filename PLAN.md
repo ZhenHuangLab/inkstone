@@ -82,8 +82,12 @@ gexport/
 
 - **P1 骨架 + 取数** ✅（2026-07-08）：脚手架、UI 注入、API 客户端、全量抓取、原始 JSON zip 导出 + 基础 Markdown（线性化/公式/标题降级/frontmatter/排版）
 - **P2 保真度** ✅（2026-07-08）：引用还原（content_references → 行内链接 + Sources）、附件管道（图片全下 / 文件 ≤2MB）、thoughts/代码解释器类型、全局限速 + 失败重试（Canvas 精细还原顺延到 P3，MVP 为折叠嵌入）
-- **P3 体验**：增量同步、File System Access 直写 vault、设置面板（排版风格/链接风格/附件上限/开关）、Canvas patch 重放
-- **P4 可选**：复用转换核心做官方导出 zip 的离线 CLI（Bun 直接跑）；Claude/Gemini adapter
+- **P2.5** ✅（2026-07-08）：增量同步（提前自 P3）、单对话导出、附件上限设置、Branch 对话 frontmatter 回链父对话
+- **P3 体验**：File System Access 直写 vault、更多设置（排版风格/链接风格）、Canvas patch 重放
+- **P4 脱离油猴（用户明确期望）**：转换层（convert/）零浏览器依赖、api.ts 只依赖 fetch，天然可复用到：
+  1. **MV3 浏览器扩展**——同一套 src，加 manifest + content script 打包目标（vite 多入口）；不再依赖 Tampermonkey，可上架商店
+  2. **官方导出 zip 的离线 CLI**（Bun 直接跑）——完全不碰 backend-api，靠 Settings→Export 的 zip 输入，零限流风险
+  3. Claude/Gemini adapter
 
 ## 实战经验（2026-07-08 E2E，344 对话实测）
 

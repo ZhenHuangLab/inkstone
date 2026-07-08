@@ -13,22 +13,36 @@ import {
 } from './api'
 import { assetToken, conversationToMarkdown, filenameFor, sanitizeName, type AssetRef } from './convert/markdown'
 import { downloadBlob, makeZip, strToU8, type ZipEntries } from './output/zip'
-import { clearWatermarks, loadWatermark, saveWatermark, selectChanged, type Watermark } from './state'
+import {
+  clearWatermarks,
+  loadSettings,
+  loadWatermark,
+  saveSettings,
+  saveWatermark,
+  selectChanged,
+  type Watermark,
+} from './state'
 import { mountPanel, type ExportKind, type ExportOptions, type PanelHandle } from './ui'
 import type { ConversationListItem } from './types'
 
-// 文件类附件（PDF 等）超过该大小不下载，正文留说明；图片始终下载（上限只防异常）
-const MAX_FILE_ATTACHMENT_BYTES = 2 * 1024 * 1024
+// 图片始终下载，上限只防异常；文件类附件的上限由面板设置（opts.maxFileMB）
 const MAX_IMAGE_BYTES = 30 * 1024 * 1024
 
 let activeCancel: CancelToken | null = null
 
 mountPanel(
-  startExport,
+  (kind, panel, opts) => {
+    if (kind === 'single') void exportSingle(panel, opts)
+    else void startExport(kind, panel, opts)
+  },
   () => {
     if (activeCancel) activeCancel.cancelled = true
   },
   () => clearWatermarks(['markdown', 'json']),
+  {
+    maxFileMB: loadSettings().maxFileMB,
+    onSettingsChange: maxFileMB => saveSettings({ maxFileMB }),
+  },
 )
 
 interface Failure {
@@ -37,7 +51,116 @@ interface Failure {
   error: string
 }
 
-async function startExport(kind: ExportKind, panel: PanelHandle, opts: ExportOptions): Promise<void> {
+/** 抓取 + 转换 + 附件下载的共享处理器：全量导出和单对话导出都用它。 */
+function createProcessor(
+  kind: 'markdown' | 'json',
+  token: string,
+  cancel: CancelToken,
+  panel: PanelHandle,
+  opts: ExportOptions,
+) {
+  const files: ZipEntries = {}
+  // fileId → 正文替换文本；同一附件跨对话只下载一次
+  const assetCache = new Map<string, string>()
+  const maxFileBytes = opts.maxFileMB * 1024 * 1024
+
+  async function resolveAsset(a: AssetRef): Promise<string> {
+    const cached = assetCache.get(a.fileId)
+    if (cached != null) return cached
+    let replacement: string
+    // 元数据 size 不可靠（library 文件报 0），仅作快速跳过；真正的护栏在 fetchBinary
+    const cap = a.kind === 'file' ? maxFileBytes : MAX_IMAGE_BYTES
+    if ((a.sizeBytes ?? 0) > cap) {
+      replacement = skippedNote(a, a.sizeBytes!, cap)
+    } else {
+      try {
+        const target = await resolveFileDownload(token, a.fileId, cancel)
+        const { bytes, contentType } = await fetchBinary(target.url, cancel, cap)
+        const name = assetFileName(a, target.filename, contentType)
+        const zipPath = `attachments/${a.fileId.slice(-8)}-${name}`
+        files[zipPath] = [bytes, { level: 0 }]
+        replacement = a.kind === 'image' ? `![[${zipPath}]]` : `[[${zipPath}|${a.name ?? name}]]`
+      } catch (e) {
+        if (e instanceof CancelledError) throw e
+        replacement =
+          e instanceof SizeLimitError
+            ? skippedNote(a, e.actualBytes, cap)
+            : `*(附件下载失败：${a.name ?? a.fileId} — ${String(e)})*`
+      }
+    }
+    assetCache.set(a.fileId, replacement)
+    return replacement
+  }
+
+  function skippedNote(a: AssetRef, actual: number, cap: number): string {
+    return `*(附件未下载：${a.name ?? a.fileId}，${fmtSize(actual)} 超过 ${fmtSize(cap)} 上限)*`
+  }
+
+  async function processConversation(item: ConversationListItem): Promise<{ path: string }> {
+    const conv = await fetchConversation(token, item.id, cancel)
+    if (kind === 'json') {
+      const path = `raw/${item.id}.json`
+      files[path] = strToU8(JSON.stringify(conv, null, 2))
+      return { path }
+    }
+    const { markdown, title, assets } = conversationToMarkdown(conv, item.id)
+    let md = markdown
+    let assetIdx = 0
+    for (const a of assets) {
+      assetIdx++
+      if (!opts.assets) {
+        md = md.split(assetToken(a.fileId)).join(`*(附件：${a.name ?? a.fileId} — 本次导出关闭了附件下载)*`)
+        continue
+      }
+      // 附件多的对话一磨几分钟，进度要有反馈，否则像卡死
+      if (assets.length > 3 && assetIdx % 5 === 0) {
+        panel.setStatus(`「${(item.title ?? title).slice(0, 14)}」附件 ${assetIdx}/${assets.length}…`)
+      }
+      md = md.split(assetToken(a.fileId)).join(await resolveAsset(a))
+    }
+    const path = `conversations/${filenameFor(title, item.id)}`
+    files[path] = strToU8(md)
+    return { path }
+  }
+
+  return { files, processConversation }
+}
+
+/** 只导出当前打开的对话：无附件下裸 .md，有附件打小 zip。 */
+async function exportSingle(panel: PanelHandle, opts: ExportOptions): Promise<void> {
+  const cancel: CancelToken = { cancelled: false }
+  activeCancel = cancel
+  try {
+    const m = /\/c\/([0-9a-f][0-9a-f-]{10,})/i.exec(location.pathname)
+    if (!m) {
+      panel.setStatus('请先打开要导出的对话（网址需含 /c/…）')
+      return
+    }
+    panel.setStatus('获取登录态…')
+    const token = await getAccessToken(cancel)
+    const proc = createProcessor('markdown', token, cancel, panel, opts)
+    panel.setStatus('抓取当前对话…')
+    const { path } = await proc.processConversation({ id: m[1]!, title: null })
+    const mdName = path.split('/').pop()!
+    const hasAttachments = Object.keys(proc.files).some(p => p !== path)
+    if (hasAttachments) {
+      panel.setStatus('打包 zip…')
+      const data = await makeZip(proc.files)
+      downloadBlob(mdName.replace(/\.md$/, '.zip'), data)
+    } else {
+      const entry = proc.files[path]!
+      downloadBlob(mdName, entry instanceof Uint8Array ? entry : entry[0], 'text/markdown')
+    }
+    panel.setStatus(`完成：${mdName}`)
+  } catch (e) {
+    panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
+  } finally {
+    activeCancel = null
+    panel.finish()
+  }
+}
+
+async function startExport(kind: 'markdown' | 'json', panel: PanelHandle, opts: ExportOptions): Promise<void> {
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
   try {
@@ -62,67 +185,7 @@ async function startExport(kind: ExportKind, panel: PanelHandle, opts: ExportOpt
     }
     if (skipped > 0) panel.setStatus(`跳过未变化 ${skipped} 条，导出 ${list.length} 条…`)
 
-    const files: ZipEntries = {}
-    // fileId → 正文替换文本；同一附件跨对话只下载一次
-    const assetCache = new Map<string, string>()
-
-    async function resolveAsset(a: AssetRef): Promise<string> {
-      const cached = assetCache.get(a.fileId)
-      if (cached != null) return cached
-      let replacement: string
-      // 元数据 size 不可靠（library 文件报 0），仅作快速跳过；真正的护栏在 fetchBinary
-      const cap = a.kind === 'file' ? MAX_FILE_ATTACHMENT_BYTES : MAX_IMAGE_BYTES
-      if ((a.sizeBytes ?? 0) > cap) {
-        replacement = skippedNote(a, a.sizeBytes!, cap)
-      } else {
-        try {
-          const target = await resolveFileDownload(token, a.fileId, cancel)
-          const { bytes, contentType } = await fetchBinary(target.url, cancel, cap)
-          const name = assetFileName(a, target.filename, contentType)
-          const zipPath = `attachments/${a.fileId.slice(-8)}-${name}`
-          files[zipPath] = [bytes, { level: 0 }]
-          replacement = a.kind === 'image' ? `![[${zipPath}]]` : `[[${zipPath}|${a.name ?? name}]]`
-        } catch (e) {
-          if (e instanceof CancelledError) throw e
-          replacement =
-            e instanceof SizeLimitError
-              ? skippedNote(a, e.actualBytes, cap)
-              : `*(附件下载失败：${a.name ?? a.fileId} — ${String(e)})*`
-        }
-      }
-      assetCache.set(a.fileId, replacement)
-      return replacement
-    }
-
-    function skippedNote(a: AssetRef, actual: number, cap: number): string {
-      return `*(附件未下载：${a.name ?? a.fileId}，${fmtSize(actual)} 超过 ${fmtSize(cap)} 上限)*`
-    }
-
-    async function processItem(item: ConversationListItem): Promise<void> {
-      const conv = await fetchConversation(token, item.id, cancel)
-      if (kind === 'json') {
-        files[`raw/${item.id}.json`] = strToU8(JSON.stringify(conv, null, 2))
-        wmDraft[item.id] = String(item.update_time ?? '')
-        return
-      }
-      const { markdown, title, assets } = conversationToMarkdown(conv, item.id)
-      let md = markdown
-      let assetIdx = 0
-      for (const a of assets) {
-        assetIdx++
-        if (!opts.assets) {
-          md = md.split(assetToken(a.fileId)).join(`*(附件：${a.name ?? a.fileId} — 本次导出关闭了附件下载)*`)
-          continue
-        }
-        // 附件多的对话一磨几分钟，进度要有反馈，否则像卡死
-        if (assets.length > 3 && assetIdx % 5 === 0) {
-          panel.setStatus(`「${(item.title ?? '').slice(0, 14)}」附件 ${assetIdx}/${assets.length}…`)
-        }
-        md = md.split(assetToken(a.fileId)).join(await resolveAsset(a))
-      }
-      files[`conversations/${filenameFor(title, item.id)}`] = strToU8(md)
-      wmDraft[item.id] = String(item.update_time ?? '')
-    }
+    const proc = createProcessor(kind, token, cancel, panel, opts)
 
     // 单条失败不中断，收集后统一重试；失败过多则保护性中止（防止触发/加重账号级反滥用），
     // 已抓取的内容照常打包
@@ -145,7 +208,8 @@ async function startExport(kind: ExportKind, panel: PanelHandle, opts: ExportOpt
             return
           }
           try {
-            await processItem(item)
+            await proc.processConversation(item)
+            wmDraft[item.id] = String(item.update_time ?? '')
           } catch (e) {
             if (e instanceof CancelledError) throw e
             failed.push(item)
@@ -191,11 +255,11 @@ async function startExport(kind: ExportKind, panel: PanelHandle, opts: ExportOpt
       })),
     ]
     if (failures.length > 0) {
-      files['_failures.json'] = strToU8(JSON.stringify(failures, null, 2))
+      proc.files['_failures.json'] = strToU8(JSON.stringify(failures, null, 2))
     }
 
     panel.setStatus('打包 zip…')
-    const data = await makeZip(files)
+    const data = await makeZip(proc.files)
     const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')
     downloadBlob(`chatgpt-export-${kind}-${stamp}.zip`, data)
     // 水位线只在产物真正落地后推进：取消/崩溃的运行不记，避免下次增量漏数据

@@ -58,6 +58,12 @@ export function conversationToMarkdown(conv: ConversationDetail, fallbackId = ''
     body += `\n\n# Sources\n\n${sources.map(s => `- [${escapeLinkLabel(s.title)}](${s.url})`).join('\n')}`
   }
 
+  // Branch · 对话：链接回父对话的导出文件（文件名规则可预测），Obsidian 图谱直接连起来
+  const branchMeta = messages.map(m => m.metadata).find(md => md?.branching_from_conversation_id)
+  const branchedFrom = branchMeta
+    ? filenameFor(branchMeta.branching_from_conversation_title ?? '', branchMeta.branching_from_conversation_id!).replace(/\.md$/, '')
+    : null
+
   // 收尾排版：正文里 3 连以上空行压成 1 个空行（代码块内不动）
   const tidied = mapTextSegmentsOutsideCode(body, s => s.replace(/\n{3,}/g, '\n\n'))
 
@@ -69,6 +75,8 @@ export function conversationToMarkdown(conv: ConversationDetail, fallbackId = ''
     `created: ${toIso(conv.create_time)}`,
     `updated: ${toIso(conv.update_time)}`,
     model ? `model: ${model}` : null,
+    branchedFrom ? `branched_from: ${yamlQuote(`[[${branchedFrom}]]`)}` : null,
+    branchMeta ? `branched_from_url: https://chatgpt.com/c/${branchMeta.branching_from_conversation_id}` : null,
     'tags:',
     '  - chatgpt',
     '---',

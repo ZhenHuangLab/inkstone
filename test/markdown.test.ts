@@ -147,6 +147,47 @@ describe('附件与引用（P2）', () => {
   })
 })
 
+describe('Branch 对话', () => {
+  const conv = {
+    title: 'Branch · 原对话标题',
+    conversation_id: 'bbbbbbbb-0000-0000-0000-000000000000',
+    current_node: 'a1',
+    mapping: {
+      u1: {
+        id: 'u1',
+        parent: null,
+        children: ['a1'],
+        message: {
+          id: 'u1',
+          author: { role: 'user' },
+          content: { content_type: 'text', parts: ['继续分析'] },
+          metadata: {},
+        },
+      },
+      a1: {
+        id: 'a1',
+        parent: 'u1',
+        children: [],
+        message: {
+          id: 'a1',
+          author: { role: 'assistant' },
+          content: { content_type: 'text', parts: ['好的'] },
+          metadata: {
+            branching_from_conversation_id: 'aaaaaaaa-1111-0000-0000-000000000000',
+            branching_from_conversation_title: '原对话标题',
+          },
+        },
+      },
+    },
+  }
+  const { markdown } = conversationToMarkdown(conv as unknown as ConversationDetail)
+
+  test('frontmatter 链接回父对话的导出文件', () => {
+    expect(markdown).toContain('branched_from: "[[原对话标题 ~aaaaaaaa]]"')
+    expect(markdown).toContain('branched_from_url: https://chatgpt.com/c/aaaaaaaa-1111-0000-0000-000000000000')
+  })
+})
+
 describe('filenameFor', () => {
   test('非法字符换成空格并压缩', () => {
     expect(filenameFor('a/b:c*d?"<>|#^[]e', 'abc12345-rest')).toBe('a b c d e ~abc12345.md')

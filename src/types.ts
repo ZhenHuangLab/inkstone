@@ -84,6 +84,9 @@ export interface MessageMetadata {
   model_slug?: string
   content_references?: ContentReference[]
   attachments?: AttachmentMeta[]
+  // Branch · 对话：分支来源在消息级 metadata 上
+  branching_from_conversation_id?: string
+  branching_from_conversation_title?: string | null
   [k: string]: unknown
 }
 

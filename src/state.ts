@@ -57,6 +57,36 @@ export function clearWatermarks(kinds: string[]): void {
   for (const kind of kinds) saveWatermark(kind, {})
 }
 
+export interface Settings {
+  /** 文件类附件的下载上限（MB）；图片不受此限制 */
+  maxFileMB: number
+}
+
+const SETTINGS_KEY = 'gexport:settings'
+const DEFAULT_SETTINGS: Settings = { maxFileMB: 2 }
+
+export function loadSettings(): Settings {
+  try {
+    const parsed: unknown = JSON.parse(storeGet(SETTINGS_KEY) ?? '{}')
+    if (parsed && typeof parsed === 'object') {
+      const s = parsed as Partial<Settings>
+      return {
+        maxFileMB:
+          typeof s.maxFileMB === 'number' && Number.isFinite(s.maxFileMB) && s.maxFileMB > 0
+            ? s.maxFileMB
+            : DEFAULT_SETTINGS.maxFileMB,
+      }
+    }
+  } catch {
+    /* 损坏就用默认 */
+  }
+  return { ...DEFAULT_SETTINGS }
+}
+
+export function saveSettings(s: Settings): void {
+  storeSet(SETTINGS_KEY, JSON.stringify(s))
+}
+
 /** 增量筛选：只留 update_time 与水位线不一致的（新增或有变化的）对话。 */
 export function selectChanged<T extends { id: string; update_time?: string | number | null }>(
   items: readonly T[],
