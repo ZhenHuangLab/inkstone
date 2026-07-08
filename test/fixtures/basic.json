@@ -1,0 +1,232 @@
+{
+  "title": "\u8d28\u80fd\u65b9\u7a0b\u63a8\u5bfc",
+  "create_time": 1751500000.5,
+  "update_time": 1751600000.5,
+  "conversation_id": "abc12345-6789-4def-8012-3456789abcde",
+  "default_model_slug": "gpt-5-thinking",
+  "current_node": "x1",
+  "mapping": {
+    "root": {
+      "id": "root",
+      "parent": null,
+      "children": [
+        "sys1"
+      ],
+      "message": null
+    },
+    "sys1": {
+      "id": "sys1",
+      "parent": "root",
+      "children": [
+        "u1"
+      ],
+      "message": {
+        "id": "sys1",
+        "author": {
+          "role": "system"
+        },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            ""
+          ]
+        },
+        "metadata": {
+          "is_visually_hidden_from_conversation": true
+        }
+      }
+    },
+    "u1": {
+      "id": "u1",
+      "parent": "sys1",
+      "children": [
+        "a1old",
+        "a1"
+      ],
+      "message": {
+        "id": "u1",
+        "author": {
+          "role": "user"
+        },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "\u5e2e\u6211\u63a8\u5bfc \\(E=mc^2\\)\uff0c\u987a\u4fbf\u89e3\u91ca\u5355\u4f4d\u3002\n\n# \u6211\u7684\u95ee\u9898\n\n\u4e3a\u4ec0\u4e48\u662f c \u7684\u5e73\u65b9\uff1f\u4ef7\u683c\u662f $100 \u5417\uff1f"
+          ]
+        },
+        "metadata": {},
+        "create_time": 1751500001.0
+      }
+    },
+    "a1old": {
+      "id": "a1old",
+      "parent": "u1",
+      "children": [],
+      "message": {
+        "id": "a1old",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "\u65e7\u56de\u7b54\uff1a\u8fd9\u6761\u5728\u88ab\u91cd\u65b0\u751f\u6210\u540e\u4e0d\u5728\u4e3b\u7ebf\u4e0a\u3002"
+          ]
+        },
+        "metadata": {},
+        "create_time": 1751500002.0
+      }
+    },
+    "a1": {
+      "id": "a1",
+      "parent": "u1",
+      "children": [
+        "a2"
+      ],
+      "message": {
+        "id": "a1",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "thoughts",
+          "thoughts": [
+            {
+              "summary": "\u5206\u6790\u95ee\u9898",
+              "content": "\u7528\u6237\u60f3\u8981\u8d28\u80fd\u65b9\u7a0b\u63a8\u5bfc\uff0c\u6ce8\u610f \\(c\\) \u662f\u5149\u901f\u3002"
+            }
+          ]
+        },
+        "metadata": {},
+        "create_time": 1751500003.0
+      }
+    },
+    "a2": {
+      "id": "a2",
+      "parent": "a1",
+      "children": [
+        "u2"
+      ],
+      "message": {
+        "id": "a2",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "## \u63a8\u5bfc\n\n\u4ece\u52a8\u91cf\u5b88\u6052\u51fa\u53d1\ue200cite\ue202turn0search1\ue201\uff0c\u5f97\u5230\uff1a\n\n\\[\nE = mc^2\n\\]\n\n\u5176\u4e2d \\( c \\) \u662f\u5149\u901f\u30103\u2020source\u3011\u3002\n\n### \u4ee3\u7801\u793a\u4f8b\n\n```python\n# \u8fd9\u884c\u6ce8\u91ca\u4e0d\u8be5\u88ab\u964d\u7ea7\nprint(\"\\(not math\\)\")\n```\n\n\u884c\u5185\u4ee3\u7801 `\\(x\\)` \u4e5f\u4e0d\u52a8\u3002"
+          ]
+        },
+        "metadata": {
+          "model_slug": "gpt-5-thinking"
+        },
+        "recipient": "all",
+        "create_time": 1751500004.0
+      }
+    },
+    "u2": {
+      "id": "u2",
+      "parent": "a2",
+      "children": [
+        "a3"
+      ],
+      "message": {
+        "id": "u2",
+        "author": {
+          "role": "user"
+        },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "\u7528 python \u7b97\u4e00\u4e0b m=2 \u65f6\u7684\u80fd\u91cf"
+          ]
+        },
+        "metadata": {},
+        "create_time": 1751500005.0
+      }
+    },
+    "a3": {
+      "id": "a3",
+      "parent": "u2",
+      "children": [
+        "t1"
+      ],
+      "message": {
+        "id": "a3",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "code",
+          "language": "unknown",
+          "text": "m = 2\nc = 299792458\nprint(m * c**2)"
+        },
+        "metadata": {},
+        "recipient": "python",
+        "create_time": 1751500006.0
+      }
+    },
+    "t1": {
+      "id": "t1",
+      "parent": "a3",
+      "children": [
+        "a4"
+      ],
+      "message": {
+        "id": "t1",
+        "author": {
+          "role": "tool",
+          "name": "python"
+        },
+        "content": {
+          "content_type": "execution_output",
+          "text": "1.7975103574736352e+17\n"
+        },
+        "metadata": {},
+        "create_time": 1751500007.0
+      }
+    },
+    "a4": {
+      "id": "a4",
+      "parent": "t1",
+      "children": [
+        "x1"
+      ],
+      "message": {
+        "id": "a4",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "\u7ea6 \\(1.8\\times 10^{17}\\) \u7126\u8033\u3002"
+          ]
+        },
+        "metadata": {},
+        "recipient": "all",
+        "create_time": 1751500008.0
+      }
+    },
+    "x1": {
+      "id": "x1",
+      "parent": "a4",
+      "children": [],
+      "message": {
+        "id": "x1",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "mystery_blob",
+          "data": {
+            "foo": 1
+          }
+        },
+        "metadata": {},
+        "create_time": 1751500009.0
+      }
+    }
+  }
+}
