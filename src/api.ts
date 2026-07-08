@@ -34,11 +34,24 @@ export function ensureAlive(cancel?: CancelToken): void {
 }
 
 // ===== 全局限速 =====
-// 后端是突发桶型限流（实测 ~200 连发后连环 429），所以：
-// 1) 所有请求共享固定起跑间距；2) 任何一个请求吃到 429，全部 worker 共享冷却。
-const REQUEST_SPACING_MS = 550
+// 后端是突发桶型限流，且持续高频抓取会触发账号级反滥用（实测：旧对话渐进式
+// 变 429→404、列表截断，恢复要数小时）。所以宁慢勿快：
+// 1) 所有请求共享起跑间距；2) 一旦吃到 429，间距自适应放大且不回落；
+// 3) 任何全局性 429 让全部 worker 共享冷却。
+const REQUEST_SPACING_BASE_MS = 800
+const REQUEST_SPACING_MAX_MS = 4000
+// 喘息暂停：贴合突发桶回填节奏，每 ~80 个请求整体歇一段
+const REST_EVERY_N_REQUESTS = 80
+const REST_DURATION_MS = 25_000
+let requestSpacingMs = REQUEST_SPACING_BASE_MS
+let requestsSinceRest = 0
 let nextSlotAt = 0
 let cooldownUntil = 0
+
+/** 429 后调用：全局节奏永久放慢（本次运行内不回落）。 */
+function slowDown(): void {
+  requestSpacingMs = Math.min(requestSpacingMs * 1.5, REQUEST_SPACING_MAX_MS)
+}
 
 async function acquireSlot(cancel?: CancelToken): Promise<void> {
   for (;;) {
@@ -46,7 +59,11 @@ async function acquireSlot(cancel?: CancelToken): Promise<void> {
     const now = Date.now()
     const target = Math.max(nextSlotAt, cooldownUntil)
     if (now >= target) {
-      nextSlotAt = now + jitter(REQUEST_SPACING_MS, 200)
+      nextSlotAt = now + jitter(requestSpacingMs, requestSpacingMs * 0.4)
+      if (++requestsSinceRest >= REST_EVERY_N_REQUESTS) {
+        requestsSinceRest = 0
+        cooldownUntil = Math.max(cooldownUntil, now + REST_DURATION_MS)
+      }
       return
     }
     await sleep(Math.min(target - now, 500))
@@ -76,6 +93,7 @@ async function backoffFetch(url: string, init: RequestInit = {}, cancel?: Cancel
     if (!retryable || attempt >= 7) throw new ApiError(res.status, `HTTP ${res.status}: ${url}`)
     if (res.status === 429) {
       global429Streak++
+      slowDown()
       const retryAfterMs = Number(res.headers.get('retry-after')) * 1000
       if (retryAfterMs > 0) {
         cooldownUntil = Math.max(cooldownUntil, Date.now() + retryAfterMs)

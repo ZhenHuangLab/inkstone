@@ -1,5 +1,12 @@
 export type ExportKind = 'markdown' | 'json'
 
+export interface ExportOptions {
+  /** 只导出上次以来有变化的对话（水位线见 state.ts） */
+  incremental: boolean
+  /** 下载图片/文件附件（关闭后导出快得多，请求量大幅减少） */
+  assets: boolean
+}
+
 export interface PanelHandle {
   setStatus(text: string): void
   setProgress(done: number, total: number): void
@@ -32,6 +39,10 @@ const STYLE = `
   .btns button:hover:not(:disabled) { background: #f0f0f0; }
   .btns button:disabled { opacity: .5; cursor: default; }
   .btns button.primary { background: #10a37f; border-color: #10a37f; color: #fff; }
+  .opts { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; color: #444; }
+  .opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .opts input { margin: 0; }
+  .reset { border: none; background: none; color: #888; cursor: pointer; font-size: 11px; padding: 0; text-align: left; text-decoration: underline; }
   .status { min-height: 17px; color: #555; word-break: break-all; }
   progress { width: 100%; height: 8px; margin-top: 6px; display: none; }
   progress.visible { display: block; }
@@ -43,8 +54,9 @@ const STYLE = `
 `
 
 export function mountPanel(
-  onStart: (kind: ExportKind, panel: PanelHandle) => void,
+  onStart: (kind: ExportKind, panel: PanelHandle, opts: ExportOptions) => void,
   onCancel: () => void,
+  onResetWatermark: () => void,
 ): void {
   if (document.querySelector('[data-gexport]')) return
   const host = document.createElement('div')
@@ -68,6 +80,11 @@ export function mountPanel(
       <button class="primary" data-kind="markdown">Markdown zip</button>
       <button data-kind="json">原始 JSON zip</button>
     </div>
+    <div class="opts">
+      <label><input type="checkbox" data-opt="incremental" checked> 增量：跳过未变化的对话</label>
+      <label><input type="checkbox" data-opt="assets" checked> 下载附件（图片 / ≤2MB 文件）</label>
+      <button class="reset">重置增量记录（下次全量导出）</button>
+    </div>
     <div class="status">就绪</div>
     <progress max="1" value="0"></progress>
     <button class="cancel">取消</button>
@@ -77,12 +94,19 @@ export function mountPanel(
   const statusEl = panel.querySelector<HTMLDivElement>('.status')!
   const progressEl = panel.querySelector<HTMLProgressElement>('progress')!
   const cancelEl = panel.querySelector<HTMLButtonElement>('.cancel')!
+  const resetEl = panel.querySelector<HTMLButtonElement>('.reset')!
   const kindButtons = [...panel.querySelectorAll<HTMLButtonElement>('.btns button')]
+  const optOf = (name: string) =>
+    panel.querySelector<HTMLInputElement>(`input[data-opt="${name}"]`)!.checked
 
   fab.addEventListener('click', () => panel.classList.toggle('open'))
   cancelEl.addEventListener('click', () => {
     cancelEl.disabled = true
     onCancel()
+  })
+  resetEl.addEventListener('click', () => {
+    onResetWatermark()
+    statusEl.textContent = '增量记录已清除，下次导出为全量'
   })
 
   const handle: PanelHandle = {
@@ -107,7 +131,10 @@ export function mountPanel(
     btn.addEventListener('click', () => {
       for (const b of kindButtons) b.disabled = true
       cancelEl.classList.add('visible')
-      onStart(btn.dataset['kind'] as ExportKind, handle)
+      onStart(btn.dataset['kind'] as ExportKind, handle, {
+        incremental: optOf('incremental'),
+        assets: optOf('assets'),
+      })
     })
   }
 

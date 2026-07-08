@@ -13,6 +13,7 @@ export default defineConfig({
         icon: 'https://chatgpt.com/favicon.ico',
         'run-at': 'document-idle',
         noframes: true,
+        grant: ['GM_getValue', 'GM_setValue'],
       },
       build: {
         fileName: 'gexport.user.js',
