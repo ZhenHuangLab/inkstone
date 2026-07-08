@@ -70,6 +70,83 @@ describe('conversationToMarkdown', () => {
   })
 })
 
+describe('附件与引用（P2）', () => {
+  const M = (cp: number): string => String.fromCharCode(cp)
+  const cite = `${M(0xe200)}cite${M(0xe202)}turn0search1${M(0xe201)}`
+  const conv = {
+    title: '附件测试',
+    conversation_id: 'deadbeef-0000-0000-0000-000000000000',
+    current_node: 'a1',
+    mapping: {
+      u1: {
+        id: 'u1',
+        parent: null,
+        children: ['a1'],
+        message: {
+          id: 'u1',
+          author: { role: 'user' },
+          content: {
+            content_type: 'multimodal_text',
+            parts: [
+              {
+                content_type: 'image_asset_pointer',
+                asset_pointer: 'sediment://file_img123',
+                width: 10,
+                height: 10,
+                size_bytes: 5,
+              },
+              '看这张图',
+            ],
+          },
+          metadata: {
+            attachments: [
+              { id: 'file_img123', name: 'x.png', mime_type: 'image/png', size: 5 },
+              { id: 'file_doc456', name: '文档.pdf', mime_type: 'application/pdf', size: 123 },
+            ],
+          },
+        },
+      },
+      a1: {
+        id: 'a1',
+        parent: 'u1',
+        children: [],
+        message: {
+          id: 'a1',
+          author: { role: 'assistant' },
+          content: { content_type: 'text', parts: [`有出处。${cite}`] },
+          metadata: {
+            content_references: [
+              {
+                matched_text: cite,
+                type: 'grouped_webpages',
+                items: [{ title: '示例标题', url: 'https://example.com/a', attribution: '示例站' }],
+              },
+            ],
+          },
+        },
+      },
+    },
+  }
+  const result = conversationToMarkdown(conv as unknown as ConversationDetail)
+
+  test('图片 part → 占位符 + assets 登记', () => {
+    expect(result.markdown).toContain('%%GEXPORT-ASSET-file_img123%%')
+    expect(result.assets.some(a => a.fileId === 'file_img123' && a.kind === 'image')).toBe(true)
+  })
+
+  test('上传附件登记；已内联的图片不重复列出', () => {
+    expect(result.markdown).toContain('%%GEXPORT-ASSET-file_doc456%%')
+    expect(result.markdown.split('%%GEXPORT-ASSET-file_img123%%').length - 1).toBe(1)
+    expect(result.assets.filter(a => a.fileId === 'file_img123')).toHaveLength(1)
+  })
+
+  test('引用 → 行内链接 + 文末 Sources', () => {
+    expect(result.markdown).toContain('（[示例站](https://example.com/a)）')
+    expect(result.markdown).toContain('# Sources\n\n- [示例标题](https://example.com/a)')
+    expect(result.markdown).not.toContain(M(0xe200))
+  })
+})
+
 describe('filenameFor', () => {
   test('非法字符换成空格并压缩', () => {
     expect(filenameFor('a/b:c*d?"<>|#^[]e', 'abc12345-rest')).toBe('a b c d e ~abc12345.md')

@@ -29,21 +29,66 @@ export interface CancelToken {
 export const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 export const jitter = (base: number, spread = base): number => base + Math.random() * spread
 
-function ensureAlive(cancel?: CancelToken): void {
+export function ensureAlive(cancel?: CancelToken): void {
   if (cancel?.cancelled) throw new CancelledError()
 }
 
-// 429/5xx 指数退避重试；页内同源 fetch 自带登录 cookie
-async function backoffFetch(url: string, init: RequestInit = {}, cancel?: CancelToken): Promise<Response> {
-  let delay = 1000
-  for (let attempt = 0; ; attempt++) {
+// ===== 全局限速 =====
+// 后端是突发桶型限流（实测 ~200 连发后连环 429），所以：
+// 1) 所有请求共享固定起跑间距；2) 任何一个请求吃到 429，全部 worker 共享冷却。
+const REQUEST_SPACING_MS = 550
+let nextSlotAt = 0
+let cooldownUntil = 0
+
+async function acquireSlot(cancel?: CancelToken): Promise<void> {
+  for (;;) {
     ensureAlive(cancel)
+    const now = Date.now()
+    const target = Math.max(nextSlotAt, cooldownUntil)
+    if (now >= target) {
+      nextSlotAt = now + jitter(REQUEST_SPACING_MS, 200)
+      return
+    }
+    await sleep(Math.min(target - now, 500))
+  }
+}
+
+// 跨 URL 连续 429 计数：区分「全局限流」和「条目级 429」的关键信号
+let global429Streak = 0
+
+// 429/5xx 指数退避重试；页内同源 fetch 自带登录 cookie。
+// 实测教训：部分对话会**永久性 429/404**（条目级问题，同一时刻其他请求全 200），
+// 把它们当全局限流会拖停整条流水线——所以：
+//  - 带 Retry-After 的 429 → 真全局信号，共享冷却
+//  - 不带 Retry-After 的 429 → 条目级，快速放弃（结尾重试环节还有一次机会）
+//  - 跨 URL 连续多次 429 → 无头全局限流的兜底，短冷却
+async function backoffFetch(url: string, init: RequestInit = {}, cancel?: CancelToken): Promise<Response> {
+  let delay = 2000
+  let headerless429s = 0
+  for (let attempt = 0; ; attempt++) {
+    await acquireSlot(cancel)
     const res = await fetch(url, { credentials: 'include', ...init })
-    if (res.ok) return res
+    if (res.ok) {
+      global429Streak = 0
+      return res
+    }
     const retryable = res.status === 429 || res.status >= 500
-    if (!retryable || attempt >= 4) throw new ApiError(res.status, `HTTP ${res.status}: ${url}`)
-    const retryAfter = Number(res.headers.get('retry-after')) * 1000
-    await sleep(retryAfter > 0 ? retryAfter : jitter(delay))
+    if (!retryable || attempt >= 7) throw new ApiError(res.status, `HTTP ${res.status}: ${url}`)
+    if (res.status === 429) {
+      global429Streak++
+      const retryAfterMs = Number(res.headers.get('retry-after')) * 1000
+      if (retryAfterMs > 0) {
+        cooldownUntil = Math.max(cooldownUntil, Date.now() + retryAfterMs)
+      } else if (global429Streak >= 5) {
+        cooldownUntil = Math.max(cooldownUntil, Date.now() + 15_000)
+      } else {
+        headerless429s++
+        if (headerless429s > 1) throw new ApiError(429, `HTTP 429（条目级，快速放弃）: ${url}`)
+        await sleep(jitter(delay))
+      }
+    } else {
+      await sleep(jitter(delay))
+    }
     delay = Math.min(delay * 2, 30_000)
   }
 }
@@ -70,21 +115,23 @@ export async function listConversationsPage(
 
 export async function listAllConversations(
   token: string,
-  onProgress?: (fetched: number, total: number) => void,
+  onProgress?: (fetched: number) => void,
   cancel?: CancelToken,
 ): Promise<ConversationListItem[]> {
   const all: ConversationListItem[] = []
   let offset = 0
   let limit = 100
-  let total = Infinity
-  while (offset < total) {
+  let emptyRetries = 0
+  // 注意：接口的 total 字段不可靠（实测翻页途中返回 offset+len+1），
+  // 终止条件只认「空页」或「不足一页」。
+  for (;;) {
     ensureAlive(cancel)
     let page: ConversationListPage
     try {
       page = await listConversationsPage(token, offset, limit, cancel)
     } catch (e) {
       // limit 上限历史上收紧过；非限流的 4xx 先降到 50 重试一次
-      if (e instanceof ApiError && e.status >= 400 && e.status < 500 && limit > 50) {
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 429 && limit > 50) {
         limit = 50
         continue
       }
@@ -92,11 +139,18 @@ export async function listAllConversations(
     }
     const items = page.items ?? []
     all.push(...items)
-    total = typeof page.total === 'number' ? page.total : all.length
-    onProgress?.(all.length, total)
-    if (items.length === 0) break
+    onProgress?.(all.length)
+    // 服务端可能按自己的上限截页（返回数 < 请求 limit 不代表到底），只认空页；
+    // 而且列表索引实测会瞬时降级、提前返回空页/短列表（对话本身还在），
+    // 所以空页也不轻信，隔几秒重试确认，连续空 3 次才算到底。
+    if (items.length === 0) {
+      if (all.length === 0 || emptyRetries >= 2) break
+      emptyRetries++
+      await sleep(4000 * emptyRetries)
+      continue
+    }
+    emptyRetries = 0
     offset += items.length
-    await sleep(jitter(250))
   }
   return all
 }
@@ -108,6 +162,57 @@ export async function fetchConversation(
 ): Promise<ConversationDetail> {
   const res = await backoffFetch(`${location.origin}/backend-api/conversation/${id}`, { headers: auth(token) }, cancel)
   return (await res.json()) as ConversationDetail
+}
+
+export interface FileDownloadTarget {
+  url: string
+  filename: string | null
+}
+
+/** 换取附件的签名下载地址（对 sediment:// 图片与用户上传文件均有效，fn 参数带原始文件名）。 */
+export async function resolveFileDownload(
+  token: string,
+  fileId: string,
+  cancel?: CancelToken,
+): Promise<FileDownloadTarget> {
+  const res = await backoffFetch(`${location.origin}/backend-api/files/${fileId}/download`, { headers: auth(token) }, cancel)
+  const data = (await res.json()) as { status?: string; download_url?: string }
+  if (!data.download_url) throw new Error(`files/${fileId}/download 未返回 download_url`)
+  let filename: string | null = null
+  try {
+    filename = new URL(data.download_url, location.origin).searchParams.get('fn')
+  } catch {
+    /* 签名地址解析失败不致命 */
+  }
+  return { url: data.download_url, filename }
+}
+
+export class SizeLimitError extends Error {
+  constructor(readonly actualBytes: number) {
+    super(`附件大小 ${actualBytes} 字节超出上限`)
+    this.name = 'SizeLimitError'
+  }
+}
+
+/** 附件元数据里的 size 不可靠（library 文件报 0），上限以实际传输为准。 */
+export async function fetchBinary(
+  url: string,
+  cancel?: CancelToken,
+  maxBytes?: number,
+): Promise<{ bytes: Uint8Array; contentType: string | null }> {
+  const res = await backoffFetch(url, {}, cancel)
+  const declared = Number(res.headers.get('content-length'))
+  if (maxBytes != null && declared > maxBytes) {
+    try {
+      await res.body?.cancel()
+    } catch {
+      /* 取消流失败无所谓 */
+    }
+    throw new SizeLimitError(declared)
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer())
+  if (maxBytes != null && bytes.length > maxBytes) throw new SizeLimitError(bytes.length)
+  return { bytes, contentType: res.headers.get('content-type') }
 }
 
 // 简易并发池：fn 抛错即整体中止（逐条的容错由调用方在 fn 里自己 catch）

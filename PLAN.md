@@ -80,10 +80,19 @@ gexport/
 
 ## 阶段
 
-- **P1 骨架 + 取数**：脚手架、UI 注入、API 客户端、全量抓取、原始 JSON zip 导出 + 基础 Markdown（线性化/公式/标题降级/frontmatter/排版）
-- **P2 保真度**：引用还原、附件管道、thoughts/Canvas/代码解释器类型
-- **P3 体验**：增量同步、File System Access 直写 vault、设置面板（排版风格/链接风格/开关）
+- **P1 骨架 + 取数** ✅（2026-07-08）：脚手架、UI 注入、API 客户端、全量抓取、原始 JSON zip 导出 + 基础 Markdown（线性化/公式/标题降级/frontmatter/排版）
+- **P2 保真度** ✅（2026-07-08）：引用还原（content_references → 行内链接 + Sources）、附件管道（图片全下 / 文件 ≤2MB）、thoughts/代码解释器类型、全局限速 + 失败重试（Canvas 精细还原顺延到 P3，MVP 为折叠嵌入）
+- **P3 体验**：增量同步、File System Access 直写 vault、设置面板（排版风格/链接风格/附件上限/开关）、Canvas patch 重放
 - **P4 可选**：复用转换核心做官方导出 zip 的离线 CLI（Bun 直接跑）；Claude/Gemini adapter
+
+## 实战经验（2026-07-08 E2E，344 对话实测）
+
+- 列表接口 `total` 字段不可靠（翻页途中返回 offset+len+1），终止只认空页 + 重试确认
+- 列表索引会瞬时降级：突发请求后整个列表短暂只返回 83/344 条（对话详情仍可取），恢复需静置几分钟
+- 限流是突发桶型：~200 连发后连环 429，Retry-After 可能很长；必须全局共享冷却而非各请求独立退避
+- 附件元数据 `size` 不可靠（library 文件报 0），大小上限要靠 Content-Length + 实际字节双重护栏
+- `sources_footnote` 引用的 `matched_text` 可能是一个裸空格——替换前必须验证 matched_text 真的是引用标记
+- 模型会写同长度反引号嵌套围栏（```md 内套 ```bash），任何 CommonMark 状态机都会错位——引用剥离不能依赖代码感知
 
 ## 风险
 

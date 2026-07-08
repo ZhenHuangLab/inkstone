@@ -53,9 +53,37 @@ export interface MessageContent {
   [k: string]: unknown
 }
 
+export interface ContentReferenceItem {
+  title?: string | null
+  url?: string | null
+  attribution?: string | null
+  snippet?: string | null
+  [k: string]: unknown
+}
+
+export interface ContentReference {
+  matched_text?: string
+  type?: string
+  alt?: string | null
+  name?: string | null // type=file 时的文件名
+  items?: ContentReferenceItem[]
+  fallback_items?: ContentReferenceItem[]
+  [k: string]: unknown
+}
+
+export interface AttachmentMeta {
+  id: string
+  name?: string | null
+  mime_type?: string | null
+  size?: number | null
+  [k: string]: unknown
+}
+
 export interface MessageMetadata {
   is_visually_hidden_from_conversation?: boolean
   model_slug?: string
+  content_references?: ContentReference[]
+  attachments?: AttachmentMeta[]
   [k: string]: unknown
 }
 

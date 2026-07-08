@@ -1,10 +1,13 @@
-import { zip, strToU8 } from 'fflate'
+import { zip, strToU8, type Zippable } from 'fflate'
 
 export { strToU8 }
 
-export function makeZip(files: Record<string, Uint8Array>): Promise<Uint8Array> {
+export type ZipEntries = Record<string, Uint8Array | [Uint8Array, { level: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }]>
+
+/** 文本走压缩；图片等已压缩的二进制传 [bytes, {level: 0}] 免得白费 CPU。 */
+export function makeZip(files: ZipEntries): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
-    zip(files, { level: 6 }, (err, data) => (err ? reject(err) : resolve(data)))
+    zip(files as Zippable, { level: 6 }, (err, data) => (err ? reject(err) : resolve(data)))
   })
 }
 
