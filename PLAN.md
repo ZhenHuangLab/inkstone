@@ -1,4 +1,6 @@
-# gexport — ChatGPT 对话高保真导出（→ Obsidian）
+# Inkstone（砚）— ChatGPT 对话高保真导出（→ Obsidian）
+
+> 名取「砚」：把 GPT 的原始输出研磨成能写进笔记的墨；石对石（砚 ↔ Obsidian）。
 
 > 2026-07-06 brainstorm 定稿。形态：**油猴脚本（Tampermonkey userscript）**，TypeScript 编写，Bun + Vite + vite-plugin-monkey 构建，产物为单个 `.user.js`。
 
@@ -56,7 +58,7 @@
 ## 项目结构
 
 ```
-gexport/
+inkstone/
   package.json          # bun
   vite.config.ts        # vite-plugin-monkey
   src/

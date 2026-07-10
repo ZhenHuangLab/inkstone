@@ -1,6 +1,7 @@
-# gexport
+# Inkstone（砚）
 
 在 chatgpt.com 页内一键批量导出全部对话为 Obsidian 友好的 Markdown 的油猴脚本。
+名取「砚」：砚是把原料研磨成墨、供你书写的石头——Inkstone 把 GPT 的原始输出研磨成能写进笔记的墨，石对石（砚 ↔ Obsidian）。
 目标与完整设计见 [PLAN.md](PLAN.md)。
 
 ## 特性（P1 + P2 已实现）
@@ -27,7 +28,7 @@
 
 ```bash
 bun install
-bun run build        # 产物 dist/gexport.user.js，拖进 Tampermonkey 即可
+bun run build        # 产物 dist/inkstone.user.js，拖进 Tampermonkey 即可
 ```
 
 开发时用 `bun run dev`（vite-plugin-monkey 会给出一次性安装地址，改代码热更新）。

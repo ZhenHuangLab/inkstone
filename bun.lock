@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "gexport",
+      "name": "inkstone",
       "dependencies": {
         "fflate": "^0.8.3",
       },

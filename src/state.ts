@@ -35,7 +35,7 @@ function storeSet(key: string, value: string): void {
   }
 }
 
-const keyFor = (kind: string) => `gexport:wm:${kind}`
+const keyFor = (kind: string) => `inkstone:wm:${kind}`
 
 export function loadWatermark(kind: string): Watermark {
   try {
@@ -62,7 +62,7 @@ export interface Settings {
   maxFileMB: number
 }
 
-const SETTINGS_KEY = 'gexport:settings'
+const SETTINGS_KEY = 'inkstone:settings'
 const DEFAULT_SETTINGS: Settings = { maxFileMB: 2 }
 
 export function loadSettings(): Settings {

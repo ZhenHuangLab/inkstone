@@ -23,7 +23,7 @@ describe('watermark 存取', () => {
   })
 
   test('损坏数据回退空对象', () => {
-    store.set('gexport:wm:markdown', '{oops')
+    store.set('inkstone:wm:markdown', '{oops')
     expect(loadWatermark('markdown')).toEqual({})
   })
 

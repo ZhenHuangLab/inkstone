@@ -33,7 +33,7 @@ export interface ConvertOptions {
 }
 
 /** 附件占位符：转换层不做网络请求，下载与链接改写由调用方完成。 */
-export const assetToken = (fileId: string): string => `%%GEXPORT-ASSET-${fileId}%%`
+export const assetToken = (fileId: string): string => `%%INKSTONE-ASSET-${fileId}%%`
 
 // 控制字符用码点构造，避免源码里出现不可见字面量
 const CONTROL_CHARS = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(31)}]`, 'g')
