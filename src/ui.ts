@@ -10,6 +10,20 @@ export interface ExportOptions {
   thoughts: boolean
   /** 文件类附件下载上限（MB）；图片不受限 */
   maxFileMB: number
+  /** 附件链接风格 */
+  linkStyle: 'wikilink' | 'markdown'
+  /** 消息内标题处理 */
+  headingMode: 'demote' | 'strip'
+  /** 输出目标：下载 zip / File System Access 直写文件夹 */
+  target: 'zip' | 'folder'
+}
+
+/** 面板需要持久化的设置值（与 state.ts 的 Settings 结构兼容）。 */
+export interface PanelSettings {
+  maxFileMB: number
+  linkStyle: 'wikilink' | 'markdown'
+  headingMode: 'demote' | 'strip'
+  target: 'zip' | 'folder'
 }
 
 export interface PickerItem {
@@ -39,9 +53,13 @@ export interface PanelCallbacks {
   onPickList(panel: PanelHandle): void
   onCancel(): void
   onResetWatermark(): void
+  /** target=folder 时点「重新选择文件夹」：忘掉记住的目录句柄 */
+  onForgetFolder(): void
   settings: {
-    maxFileMB: number
-    onSettingsChange(maxFileMB: number): void
+    values: PanelSettings
+    /** 浏览器支持 File System Access（Chromium 系）才允许选「文件夹」 */
+    supportsFolder: boolean
+    onSettingsChange(patch: Partial<PanelSettings>): void
   }
 }
 
@@ -165,6 +183,12 @@ const STYLE = `
     transition: border-color .15s var(--ease);
   }
   .adv input[type="number"]:focus { border-color: var(--accent); }
+  .adv select {
+    padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 12px; background: var(--bg); color: var(--fg); outline: none;
+    transition: border-color .15s var(--ease);
+  }
+  .adv select:focus { border-color: var(--accent); }
   .reset {
     margin-top: 4px; padding: 0; border: none; background: none; color: var(--muted);
     font-size: 11px; text-decoration: underline; text-underline-offset: 2px;
@@ -264,13 +288,28 @@ export function mountPanel(cb: PanelCallbacks): void {
       <button data-v="json" aria-pressed="false">JSON</button>
     </div>
 
+    <div class="sec">输出到</div>
+    <div class="seg" data-seg="target">
+      <button data-v="zip" class="on" aria-pressed="true">下载 zip</button>
+      <button data-v="folder" aria-pressed="false">直写文件夹</button>
+    </div>
+
     <button class="adv-toggle" aria-expanded="false">${ICON_CHEVRON} 高级设置</button>
     <div class="adv">
       <label class="row" data-row="incremental"><span>增量：跳过未变化的对话</span><input type="checkbox" data-opt="incremental" checked></label>
       <label class="row" data-row="assets"><span>下载附件（图片始终下载）</span><input type="checkbox" data-opt="assets" checked></label>
       <label class="row" data-row="thoughts"><span>写入思考过程</span><input type="checkbox" data-opt="thoughts" checked></label>
       <label class="row" data-row="maxFileMB"><span>文件附件上限（MB）</span><input type="number" data-opt="maxFileMB" min="1" max="500" step="1" value="2"></label>
+      <label class="row" data-row="linkStyle"><span>附件链接风格</span><select data-opt="linkStyle">
+        <option value="wikilink">Wikilink</option>
+        <option value="markdown">标准 Markdown</option>
+      </select></label>
+      <label class="row" data-row="headingMode"><span>消息内标题</span><select data-opt="headingMode">
+        <option value="demote">整体降一级</option>
+        <option value="strip">剥离为加粗行</option>
+      </select></label>
       <button class="reset">重置增量记录（下次全量导出）</button>
+      <button class="reset" data-act="forget-folder" hidden>重新选择写入文件夹</button>
     </div>
 
     <button class="go">导出当前对话</button>
@@ -294,27 +333,58 @@ export function mountPanel(cb: PanelCallbacks): void {
   const pickerCount = pickerEl.querySelector<HTMLSpanElement>('.count')!
   const segButtons = [...panel.querySelectorAll<HTMLButtonElement>('.seg button')]
   const toolButtons = [...pickerEl.querySelectorAll<HTMLButtonElement>('.tools button')]
+  const forgetFolderEl = panel.querySelector<HTMLButtonElement>('[data-act="forget-folder"]')!
 
   let scope: ExportScope = 'current'
   let format: ExportFormat = 'markdown'
+  let target: 'zip' | 'folder' = cb.settings.supportsFolder ? cb.settings.values.target : 'zip'
   let listLoaded = false
   let running = false
 
   const optOf = (name: string) => panel.querySelector<HTMLInputElement>(`input[data-opt="${name}"]`)!.checked
 
   const maxFileEl = panel.querySelector<HTMLInputElement>('input[data-opt="maxFileMB"]')!
-  maxFileEl.value = String(cb.settings.maxFileMB)
+  maxFileEl.value = String(cb.settings.values.maxFileMB)
   const readMaxFileMB = () => {
     const v = Number(maxFileEl.value)
     return Number.isFinite(v) && v >= 1 ? Math.min(v, 500) : 2
   }
-  maxFileEl.addEventListener('change', () => cb.settings.onSettingsChange(readMaxFileMB()))
+  maxFileEl.addEventListener('change', () => cb.settings.onSettingsChange({ maxFileMB: readMaxFileMB() }))
+
+  const linkStyleEl = panel.querySelector<HTMLSelectElement>('select[data-opt="linkStyle"]')!
+  const headingModeEl = panel.querySelector<HTMLSelectElement>('select[data-opt="headingMode"]')!
+  linkStyleEl.value = cb.settings.values.linkStyle
+  headingModeEl.value = cb.settings.values.headingMode
+  linkStyleEl.addEventListener('change', () =>
+    cb.settings.onSettingsChange({ linkStyle: linkStyleEl.value === 'markdown' ? 'markdown' : 'wikilink' }),
+  )
+  headingModeEl.addEventListener('change', () =>
+    cb.settings.onSettingsChange({ headingMode: headingModeEl.value === 'strip' ? 'strip' : 'demote' }),
+  )
+
+  // 不支持 File System Access（Firefox/Safari）就锁死 zip
+  const folderBtn = panel.querySelector<HTMLButtonElement>('[data-seg="target"] button[data-v="folder"]')!
+  if (!cb.settings.supportsFolder) {
+    folderBtn.disabled = true
+    folderBtn.title = '需要 Chrome / Edge（File System Access API）'
+  }
+  // 记住的输出目标是文件夹时，把分段控件拨过去
+  if (target === 'folder') {
+    for (const b of panel.querySelectorAll<HTMLButtonElement>('[data-seg="target"] button')) {
+      const on = b.dataset['v'] === 'folder'
+      b.classList.toggle('on', on)
+      b.setAttribute('aria-pressed', String(on))
+    }
+  }
 
   const readOpts = (): ExportOptions => ({
     incremental: optOf('incremental'),
     assets: optOf('assets'),
     thoughts: optOf('thoughts'),
     maxFileMB: readMaxFileMB(),
+    linkStyle: linkStyleEl.value === 'markdown' ? 'markdown' : 'wikilink',
+    headingMode: headingModeEl.value === 'strip' ? 'strip' : 'demote',
+    target,
   })
 
   const rows = () => [...pickerList.querySelectorAll<HTMLLabelElement>('.row')]
@@ -331,9 +401,10 @@ export function mountPanel(cb: PanelCallbacks): void {
     pickerEl.classList.toggle('open', scope === 'selection')
     pickerEmpty.classList.toggle('visible', listLoaded && visibleRows().length === 0)
     advEl.querySelector('[data-row="incremental"]')!.classList.toggle('dis', scope !== 'all')
-    for (const name of ['assets', 'thoughts', 'maxFileMB']) {
+    for (const name of ['assets', 'thoughts', 'maxFileMB', 'linkStyle', 'headingMode']) {
       advEl.querySelector(`[data-row="${name}"]`)!.classList.toggle('dis', format === 'json')
     }
+    forgetFolderEl.hidden = target !== 'folder'
     const n = selectedIds().length
     pickerCount.textContent = `已选 ${n} 条`
     goEl.textContent =
@@ -402,6 +473,9 @@ export function mountPanel(cb: PanelCallbacks): void {
       if (group === 'scope') {
         scope = btn.dataset['v'] as ExportScope
         if (scope === 'selection' && !listLoaded) loadList()
+      } else if (group === 'target') {
+        target = btn.dataset['v'] as 'zip' | 'folder'
+        cb.settings.onSettingsChange({ target })
       } else {
         format = btn.dataset['v'] as ExportFormat
       }
@@ -445,6 +519,10 @@ export function mountPanel(cb: PanelCallbacks): void {
   $<HTMLButtonElement>('.reset').addEventListener('click', () => {
     cb.onResetWatermark()
     statusEl.textContent = '增量记录已清除，下次导出为全量'
+  })
+  forgetFolderEl.addEventListener('click', () => {
+    cb.onForgetFolder()
+    statusEl.textContent = '已忘记写入文件夹，下次导出重新选择'
   })
   goEl.addEventListener('click', () => {
     const ids = scope === 'selection' ? selectedIds() : []

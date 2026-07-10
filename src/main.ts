@@ -12,6 +12,7 @@ import {
   type CancelToken,
 } from './api'
 import {
+  assetLink,
   assetToken,
   conversationToMarkdown,
   filenameFor,
@@ -19,6 +20,12 @@ import {
   type AssetRef,
 } from './convert/markdown'
 import { downloadBlob, makeZip, strToU8, type ZipEntries } from './output/zip'
+import {
+  acquireVaultDir,
+  forgetVaultDir,
+  supportsDirectoryPicker,
+  writeVaultFile,
+} from './output/fsaccess'
 import {
   clearWatermarks,
   loadSettings,
@@ -40,9 +47,7 @@ let pickedList: ConversationListItem[] | null = null
 
 mountPanel({
   onExport(scope, format, ids, panel, opts) {
-    if (scope === 'current') void exportSingle(format, panel, opts)
-    else if (scope === 'selection') void exportSelection(ids, format, panel, opts)
-    else void startExport(format, panel, opts)
+    void dispatchExport(scope, format, ids, panel, opts)
   },
   onPickList(panel) {
     void loadPickList(panel)
@@ -53,11 +58,44 @@ mountPanel({
   onResetWatermark() {
     clearWatermarks(['markdown', 'json'])
   },
+  onForgetFolder() {
+    void forgetVaultDir()
+  },
   settings: {
-    maxFileMB: loadSettings().maxFileMB,
-    onSettingsChange: (maxFileMB) => saveSettings({ maxFileMB }),
+    values: loadSettings(),
+    supportsFolder: supportsDirectoryPicker(),
+    onSettingsChange: (patch) => saveSettings(patch),
   },
 })
+
+/** 统一入口：folder 目标先在用户手势链路里拿目录句柄，再分发到各导出流程。 */
+async function dispatchExport(
+  scope: 'current' | 'all' | 'selection',
+  format: ExportFormat,
+  ids: string[],
+  panel: PanelHandle,
+  opts: ExportOptions,
+): Promise<void> {
+  let sink: OutputSink | null = null
+  if (opts.target === 'folder') {
+    try {
+      const dir = await acquireVaultDir()
+      if (!dir) {
+        panel.setStatus('未选择写入文件夹，已取消')
+        panel.finish()
+        return
+      }
+      sink = folderSink(dir)
+    } catch (e) {
+      panel.setStatus(`打不开写入文件夹：${String(e)}`)
+      panel.finish()
+      return
+    }
+  }
+  if (scope === 'current') await exportSingle(format, panel, opts, sink)
+  else if (scope === 'selection') await exportSelection(ids, format, panel, opts, sink)
+  else await startExport(format, panel, opts, sink)
+}
 
 async function loadPickList(panel: PanelHandle): Promise<void> {
   const cancel: CancelToken = { cancelled: false }
@@ -87,6 +125,7 @@ async function exportSelection(
   format: ExportFormat,
   panel: PanelHandle,
   opts: ExportOptions,
+  sink: OutputSink | null,
 ): Promise<void> {
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
@@ -99,7 +138,7 @@ async function exportSelection(
     }
     panel.setStatus('获取登录态…')
     const token = await getAccessToken(cancel)
-    await exportItems(format, items, 0, token, cancel, panel, opts)
+    await exportItems(format, items, 0, token, cancel, panel, opts, sink)
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
   } finally {
@@ -120,15 +159,56 @@ interface Failure {
   error: string
 }
 
-/** 抓取 + 转换 + 附件下载的共享处理器：全量导出和单对话导出都用它。 */
+// ---------- 输出 Sink：zip 下载 / File System Access 直写 ----------
+
+interface OutputSink {
+  put(path: string, data: Uint8Array, opts?: { precompressed?: boolean }): Promise<void>
+  fileCount(): number
+  /** 收尾（zip 打包触发下载 / 直写无事）；返回完成描述 */
+  close(panel: PanelHandle, zipName: string): Promise<string>
+}
+
+function zipSink(): OutputSink & { entries: ZipEntries } {
+  const entries: ZipEntries = {}
+  return {
+    entries,
+    put(path, data, opts) {
+      entries[path] = opts?.precompressed ? [data, { level: 0 }] : data
+      return Promise.resolve()
+    },
+    fileCount: () => Object.keys(entries).length,
+    async close(panel, zipName) {
+      panel.setStatus('打包 zip…')
+      const data = await makeZip(entries)
+      downloadBlob(zipName, data)
+      return `已下载 ${zipName}`
+    },
+  }
+}
+
+function folderSink(dir: FileSystemDirectoryHandle): OutputSink {
+  let n = 0
+  return {
+    async put(path, data) {
+      await writeVaultFile(dir, path, data)
+      n++
+    },
+    fileCount: () => n,
+    close: () => Promise.resolve(`已写入 ${n} 个文件 → 「${dir.name}」`),
+  }
+}
+
+// ---------- 抓取 + 转换 + 附件下载 ----------
+
+/** 共享处理器：全量 / 所选 / 单对话导出都用它。 */
 function createProcessor(
   kind: ExportFormat,
   token: string,
   cancel: CancelToken,
   panel: PanelHandle,
   opts: ExportOptions,
+  sink: OutputSink,
 ) {
-  const files: ZipEntries = {}
   // fileId → 正文替换文本；同一附件跨对话只下载一次
   const assetCache = new Map<string, string>()
   const maxFileBytes = opts.maxFileMB * 1024 * 1024
@@ -146,9 +226,12 @@ function createProcessor(
         const target = await resolveFileDownload(token, a.fileId, cancel)
         const { bytes, contentType } = await fetchBinary(target.url, cancel, cap)
         const name = assetFileName(a, target.filename, contentType)
-        const zipPath = `attachments/${a.fileId.slice(-8)}-${name}`
-        files[zipPath] = [bytes, { level: 0 }]
-        replacement = a.kind === 'image' ? `![[${zipPath}]]` : `[[${zipPath}|${a.name ?? name}]]`
+        const path = `attachments/${a.fileId.slice(-8)}-${name}`
+        await sink.put(path, bytes, { precompressed: true })
+        replacement = assetLink(opts.linkStyle, path, {
+          embed: a.kind === 'image',
+          label: a.kind === 'image' ? undefined : (a.name ?? name),
+        })
       } catch (e) {
         if (e instanceof CancelledError) throw e
         replacement =
@@ -169,10 +252,13 @@ function createProcessor(
     const conv = await fetchConversation(token, item.id, cancel)
     if (kind === 'json') {
       const path = `raw/${item.id}.json`
-      files[path] = strToU8(JSON.stringify(conv, null, 2))
+      await sink.put(path, strToU8(JSON.stringify(conv, null, 2)))
       return { path }
     }
-    const { markdown, title, assets } = conversationToMarkdown(conv, item.id, { thoughts: opts.thoughts })
+    const { markdown, title, assets } = conversationToMarkdown(conv, item.id, {
+      thoughts: opts.thoughts,
+      headingMode: opts.headingMode,
+    })
     let md = markdown
     let assetIdx = 0
     for (const a of assets) {
@@ -188,15 +274,20 @@ function createProcessor(
       md = md.split(assetToken(a.fileId)).join(await resolveAsset(a))
     }
     const path = `conversations/${filenameFor(title, item.id)}`
-    files[path] = strToU8(md)
+    await sink.put(path, strToU8(md))
     return { path }
   }
 
-  return { files, processConversation }
+  return { processConversation }
 }
 
-/** 只导出当前打开的对话：markdown 无附件下裸 .md、有附件打小 zip；json 恒为裸 .json。 */
-async function exportSingle(format: ExportFormat, panel: PanelHandle, opts: ExportOptions): Promise<void> {
+/** 只导出当前打开的对话：zip 目标下无附件裸 .md、有附件小 zip；folder 目标直写 vault。 */
+async function exportSingle(
+  format: ExportFormat,
+  panel: PanelHandle,
+  opts: ExportOptions,
+  sink: OutputSink | null,
+): Promise<void> {
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
   try {
@@ -208,26 +299,33 @@ async function exportSingle(format: ExportFormat, panel: PanelHandle, opts: Expo
     panel.setStatus('获取登录态…')
     const token = await getAccessToken(cancel)
     panel.setStatus('抓取当前对话…')
-    if (format === 'json') {
+
+    if (format === 'json' && sink == null) {
+      // zip 目标的 json 单对话：裸 .json 下载
       const conv = await fetchConversation(token, m[1]!, cancel)
       const name = filenameFor((conv.title ?? '').trim() || 'Untitled', m[1]!).replace(/\.md$/, '.json')
       downloadBlob(name, strToU8(JSON.stringify(conv, null, 2)), 'application/json')
       panel.setStatus(`完成：${name}`)
       return
     }
-    const proc = createProcessor('markdown', token, cancel, panel, opts)
+
+    const zs = sink == null ? zipSink() : null
+    const proc = createProcessor(format, token, cancel, panel, opts, zs ?? sink!)
     const { path } = await proc.processConversation({ id: m[1]!, title: null })
-    const mdName = path.split('/').pop()!
-    const hasAttachments = Object.keys(proc.files).some((p) => p !== path)
-    if (hasAttachments) {
-      panel.setStatus('打包 zip…')
-      const data = await makeZip(proc.files)
-      downloadBlob(mdName.replace(/\.md$/, '.zip'), data)
+    const baseName = path.split('/').pop()!
+
+    if (zs != null) {
+      const hasAttachments = Object.keys(zs.entries).some((p) => p !== path)
+      if (hasAttachments) {
+        panel.setStatus(await zs.close(panel, baseName.replace(/\.md$/, '.zip')))
+      } else {
+        const entry = zs.entries[path]!
+        downloadBlob(baseName, entry instanceof Uint8Array ? entry : entry[0], 'text/markdown')
+        panel.setStatus(`完成：${baseName}`)
+      }
     } else {
-      const entry = proc.files[path]!
-      downloadBlob(mdName, entry instanceof Uint8Array ? entry : entry[0], 'text/markdown')
+      panel.setStatus(`完成：${await sink!.close(panel, '')}`)
     }
-    panel.setStatus(`完成：${mdName}`)
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
   } finally {
@@ -236,7 +334,12 @@ async function exportSingle(format: ExportFormat, panel: PanelHandle, opts: Expo
   }
 }
 
-async function startExport(kind: ExportFormat, panel: PanelHandle, opts: ExportOptions): Promise<void> {
+async function startExport(
+  kind: ExportFormat,
+  panel: PanelHandle,
+  opts: ExportOptions,
+  sink: OutputSink | null,
+): Promise<void> {
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
   try {
@@ -263,7 +366,7 @@ async function startExport(kind: ExportFormat, panel: PanelHandle, opts: ExportO
     }
     if (skipped > 0) panel.setStatus(`跳过未变化 ${skipped} 条，导出 ${list.length} 条…`)
 
-    await exportItems(kind, list, skipped, token, cancel, panel, opts)
+    await exportItems(kind, list, skipped, token, cancel, panel, opts, sink)
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
   } finally {
@@ -272,7 +375,7 @@ async function startExport(kind: ExportFormat, panel: PanelHandle, opts: ExportO
   }
 }
 
-/** 全量 / 增量 / 所选 共用的导出主体：两遍抓取 + 打包 + 水位线推进。 */
+/** 全量 / 增量 / 所选 共用的导出主体：两遍抓取 + 落地 + 水位线推进。 */
 async function exportItems(
   kind: ExportFormat,
   list: ConversationListItem[],
@@ -281,13 +384,15 @@ async function exportItems(
   cancel: CancelToken,
   panel: PanelHandle,
   opts: ExportOptions,
+  sinkIn: OutputSink | null,
 ): Promise<void> {
+  const sink = sinkIn ?? zipSink()
   // 水位线合并推进：导出成功的对话记下 update_time，其余保持原状
   const wmDraft: Watermark = { ...loadWatermark(kind) }
-  const proc = createProcessor(kind, token, cancel, panel, opts)
+  const proc = createProcessor(kind, token, cancel, panel, opts, sink)
 
   // 单条失败不中断，收集后统一重试；失败过多则保护性中止（防止触发/加重账号级反滥用），
-  // 已抓取的内容照常打包
+  // 已抓取的内容照常落地
   async function runPass(
     items: readonly ConversationListItem[],
     concurrency: number,
@@ -358,20 +463,18 @@ async function exportItems(
     })),
   ]
   if (failures.length > 0) {
-    proc.files['_failures.json'] = strToU8(JSON.stringify(failures, null, 2))
+    await sink.put('_failures.json', strToU8(JSON.stringify(failures, null, 2)))
   }
 
-  panel.setStatus('打包 zip…')
-  const data = await makeZip(proc.files)
   const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')
-  downloadBlob(`chatgpt-export-${kind}-${stamp}.zip`, data)
+  const doneDesc = await sink.close(panel, `chatgpt-export-${kind}-${stamp}.zip`)
   // 水位线只在产物真正落地后推进：取消/崩溃的运行不记，避免下次增量漏数据
   saveWatermark(kind, wmDraft)
   panel.setStatus(
     `${safetyAborted ? '保护性中止（失败过多，防止触发服务端限制）。' : '完成：'}` +
-      `${list.length - failures.length} 个对话` +
+      `${list.length - failures.length} 个对话，${doneDesc}` +
       (skipped > 0 ? `（另跳过未变化 ${skipped} 条）` : '') +
-      (failures.length ? `，${failures.length} 个失败（见 zip 内 _failures.json）` : ''),
+      (failures.length ? `，${failures.length} 个失败（见 _failures.json）` : ''),
   )
 }
 

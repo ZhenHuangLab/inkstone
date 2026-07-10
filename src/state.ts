@@ -60,10 +60,21 @@ export function clearWatermarks(kinds: string[]): void {
 export interface Settings {
   /** 文件类附件的下载上限（MB）；图片不受此限制 */
   maxFileMB: number
+  /** 附件链接风格：Obsidian wikilink 或标准 Markdown */
+  linkStyle: 'wikilink' | 'markdown'
+  /** 消息内标题：整体降一级 或 全部剥离为加粗行 */
+  headingMode: 'demote' | 'strip'
+  /** 输出目标：下载 zip 或 File System Access 直写文件夹 */
+  target: 'zip' | 'folder'
 }
 
 const SETTINGS_KEY = 'inkstone:settings'
-const DEFAULT_SETTINGS: Settings = { maxFileMB: 2 }
+const DEFAULT_SETTINGS: Settings = {
+  maxFileMB: 2,
+  linkStyle: 'wikilink',
+  headingMode: 'demote',
+  target: 'zip',
+}
 
 export function loadSettings(): Settings {
   try {
@@ -75,6 +86,9 @@ export function loadSettings(): Settings {
           typeof s.maxFileMB === 'number' && Number.isFinite(s.maxFileMB) && s.maxFileMB > 0
             ? s.maxFileMB
             : DEFAULT_SETTINGS.maxFileMB,
+        linkStyle: s.linkStyle === 'markdown' ? 'markdown' : 'wikilink',
+        headingMode: s.headingMode === 'strip' ? 'strip' : 'demote',
+        target: s.target === 'folder' ? 'folder' : 'zip',
       }
     }
   } catch {
@@ -83,8 +97,8 @@ export function loadSettings(): Settings {
   return { ...DEFAULT_SETTINGS }
 }
 
-export function saveSettings(s: Settings): void {
-  storeSet(SETTINGS_KEY, JSON.stringify(s))
+export function saveSettings(patch: Partial<Settings>): void {
+  storeSet(SETTINGS_KEY, JSON.stringify({ ...loadSettings(), ...patch }))
 }
 
 /** 增量筛选：只留 update_time 与水位线不一致的（新增或有变化的）对话。 */
