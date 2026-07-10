@@ -263,6 +263,14 @@ describe('model 检测', () => {
     expect(markdown).toContain('models:\n  - gpt-5-6-pro\n  - gpt-5-6-sol-pro')
   })
 
+  test('模型 A→B→A 回切：model 取实际最后使用的 A，而非去重序列末位的 B', () => {
+    const { markdown } = conversationToMarkdown(
+      chainConv(['gpt-5-6-sol-pro', 'gpt-5-6-pro', 'gpt-5-6-sol-pro']),
+    )
+    expect(markdown).toContain('model: gpt-5-6-sol-pro')
+    expect(markdown).toContain('models:\n  - gpt-5-6-sol-pro\n  - gpt-5-6-pro')
+  })
+
   test('单一模型不输出 models 列表', () => {
     const { markdown } = conversationToMarkdown(chainConv(['gpt-5-6-sol-pro']))
     expect(markdown).not.toContain('models:')

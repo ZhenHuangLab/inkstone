@@ -53,15 +53,13 @@ export function conversationToMarkdown(
   const title = (conv.title ?? '').trim() || 'Untitled'
   const messages = linearize(conv)
   // 消息级 model_slug 才是实际生成回复的模型（default_model_slug 只是对话的默认档位，仅作回退）；
-  // 中途切换过模型时以最后一条为准，全部去重后记入 models
-  const modelSlugs = [
-    ...new Set(
-      messages
-        .filter((m) => m.author.role === 'assistant' && m.metadata?.model_slug)
-        .map((m) => m.metadata!.model_slug!),
-    ),
-  ]
-  const model = modelSlugs[modelSlugs.length - 1] ?? conv.default_model_slug
+  // 中途切换过模型时以最后一条为准——须在去重前取（Set 保留首现顺序，A→B→A 会错取 B），
+  // 去重序列只用于 models 列表
+  const rawSlugs = messages
+    .filter((m) => m.author.role === 'assistant' && m.metadata?.model_slug)
+    .map((m) => m.metadata!.model_slug!)
+  const modelSlugs = [...new Set(rawSlugs)]
+  const model = rawSlugs[rawSlugs.length - 1] ?? conv.default_model_slug
 
   const ctx: RenderCtx = { sources: [], assets: [], thoughts: copts.thoughts !== false }
   const turns = groupTurns(messages)
