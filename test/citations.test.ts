@@ -106,3 +106,112 @@ describe('restoreCitations', () => {
     expect(sources).toEqual([])
   })
 })
+
+describe('token 通道（官方导出 zip 无 matched_text）', () => {
+  const M = (cp: number): string => String.fromCharCode(cp)
+  const mark = (...segs: string[]) => `${M(0xe200)}${segs.join(M(0xe202))}${M(0xe201)}`
+
+  test('web 引用按 turn/ref_type/ref_index 重建', () => {
+    const refs = [
+      {
+        type: 'grouped_webpages',
+        alt: null,
+        items: [
+          {
+            title: 'NIST Handbook',
+            url: 'https://nist.gov/x',
+            attribution: 'NIST',
+            refs: [{ ref_index: 0, ref_type: 'view', turn_index: 8 }],
+          },
+        ],
+      },
+    ]
+    const { text, sources } = restoreCitations(`结论${mark('cite', 'turn8view0')}。`, refs)
+    expect(text).toBe('结论（[NIST](https://nist.gov/x)）。')
+    expect(sources).toEqual([{ title: 'NIST Handbook', url: 'https://nist.gov/x' }])
+  })
+
+  test('一个标记多 token：去重 url 后并列', () => {
+    const item = (u: string, t: number) => ({
+      title: u,
+      url: u,
+      attribution: '',
+      refs: [{ ref_index: 0, ref_type: 'search', turn_index: t }],
+    })
+    const refs = [
+      { type: 'grouped_webpages', items: [item('https://a.com/1', 1)] },
+      { type: 'grouped_webpages', items: [item('https://b.com/2', 2)] },
+    ]
+    const { text } = restoreCitations(mark('cite', 'turn1search0', 'turn2search0'), refs)
+    expect(text).toBe('（[a.com](https://a.com/1)，[b.com](https://b.com/2)）')
+  })
+
+  test('filecite 用 input_pointer 定位', () => {
+    const refs = [
+      {
+        type: 'file',
+        name: '推导.md',
+        input_pointer: { message_index: 4, file_index: 5 },
+      },
+    ]
+    const { text } = restoreCitations(`见文件${mark('filecite', 'turn4file5')}`, refs)
+    expect(text).toBe('见文件 *(引用文件: 推导.md)*')
+  })
+
+  test('解析不到的 token 仍旧剥离，不留乱码', () => {
+    const refs = [{ type: 'grouped_webpages', items: [] }]
+    const { text } = restoreCitations(`甲${mark('cite', 'turn9search9')}乙`, refs)
+    expect(text).toBe('甲乙')
+  })
+
+  test('navlist：标题段跳过，token 段照收', () => {
+    const refs = [
+      {
+        type: 'grouped_webpages',
+        items: [
+          {
+            title: 'News',
+            url: 'https://n.com/1',
+            attribution: 'N',
+            refs: [{ ref_index: 0, ref_type: 'news', turn_index: 3 }],
+          },
+        ],
+      },
+    ]
+    const { text } = restoreCitations(mark('navlist', 'Top stories', 'turn3news0'), refs)
+    expect(text).toBe('（[N](https://n.com/1)）')
+  })
+})
+
+describe('cite 标记按顺序配对（官方导出的大数 turn 号）', () => {
+  const M = (cp: number): string => String.fromCharCode(cp)
+  const mark = (...segs: string[]) => `${M(0xe200)}${segs.join(M(0xe202))}${M(0xe201)}`
+  const webRef = (url: string, label: string) => ({
+    type: 'grouped_webpages',
+    items: [{ title: label, url, attribution: label, refs: [{ ref_index: 0, ref_type: 'view', turn_index: 8 }] }],
+  })
+
+  test('标记数与 web 引用数吻合：按出现顺序配对（token 对不上也能还原）', () => {
+    const refs = [webRef('https://a.com/', 'A'), webRef('https://b.com/', 'B')]
+    const text = `甲${mark('cite', 'turn913783view0')}乙${mark('cite', 'turn711152view0')}`
+    const { text: out } = restoreCitations(text, refs)
+    expect(out).toBe('甲（[A](https://a.com/)）乙（[B](https://b.com/)）')
+  })
+
+  test('数量不吻合：不硬配，退回精确 token（对不上则剥离）', () => {
+    const refs = [webRef('https://a.com/', 'A')]
+    const text = `甲${mark('cite', 'turn913783view0')}乙${mark('cite', 'turn711152view0')}`
+    const { text: out } = restoreCitations(text, refs)
+    expect(out).toBe('甲乙')
+  })
+
+  test('filecite 与 cite 混排互不干扰', () => {
+    const refs = [
+      { type: 'file', name: 'notes.md', input_pointer: { message_index: 2, file_index: 3 } },
+      webRef('https://a.com/', 'A'),
+    ]
+    const text = `见${mark('filecite', 'turn2file3')}和${mark('cite', 'turn999999view0')}`
+    const { text: out } = restoreCitations(text, refs)
+    expect(out).toBe('见 *(引用文件: notes.md)*和（[A](https://a.com/)）')
+  })
+})
