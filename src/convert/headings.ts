@@ -13,3 +13,20 @@ export function demoteHeadings(text: string, depth = 1): string {
     return m[1]! + '#'.repeat(level) + m[3]!
   })
 }
+
+/** 「全部剥离」模式：消息内标题一律转成加粗行，文档层级只留 `# User` / `# ChatGPT`。 */
+export function stripHeadings(text: string): string {
+  return mapLinesOutsideFencedCode(text, (line) => {
+    const m = /^ {0,3}#{1,6}([ \t].*|)$/.exec(line)
+    if (!m) return line
+    // ATX 闭合序列（`# 标题 ##`）也要去掉；`# C#` 里的 # 属于标题文本，不受影响
+    const inner = m[1]!.replace(/[ \t]+#+[ \t]*$/, '').trim()
+    return inner === '' ? '' : `**${inner}**`
+  })
+}
+
+export type HeadingMode = 'demote' | 'strip'
+
+export function transformHeadings(text: string, mode: HeadingMode): string {
+  return mode === 'strip' ? stripHeadings(text) : demoteHeadings(text)
+}

@@ -8,9 +8,10 @@ import type {
 } from '../types'
 import { groupTurns, linearize, type Turn } from './linearize'
 import { convertMath } from './math'
-import { demoteHeadings } from './headings'
+import { transformHeadings, type HeadingMode } from './headings'
 import { restoreCitations, stripResidualMarkers, type SourceLink } from './citations'
 import { mapTextSegmentsOutsideCode } from './codeaware'
+import { replayCanvas, type CanvasOp } from './canvas'
 
 export interface AssetRef {
   fileId: string
@@ -30,6 +31,26 @@ export interface ConvertResult {
 export interface ConvertOptions {
   /** 是否把思维链（thoughts）写入导出，默认写入（折叠 callout） */
   thoughts?: boolean
+  /** 消息内标题处理：demote 整体降一级（默认）/ strip 全部剥离为加粗行 */
+  headingMode?: HeadingMode
+}
+
+export type LinkStyle = 'wikilink' | 'markdown'
+
+/** 附件链接统一出口：油猴端与离线 CLI 共用，保证两条管道产出一致。 */
+export function assetLink(
+  style: LinkStyle,
+  path: string,
+  opts: { label?: string; embed?: boolean } = {},
+): string {
+  if (style === 'markdown') {
+    const label = escapeLinkLabel(opts.label ?? path.split('/').pop() ?? path)
+    return `${opts.embed ? '!' : ''}[${label}](${encodeURI(path)})`
+  }
+  if (opts.embed) return `![[${path}]]`
+  // wikilink 别名里 |、] 会破坏链接语法
+  const alias = opts.label?.replace(/[[\]|]/g, '-')
+  return `[[${path}${alias ? `|${alias}` : ''}]]`
 }
 
 /** 附件占位符：转换层不做网络请求，下载与链接改写由调用方完成。 */
@@ -42,6 +63,9 @@ interface RenderCtx {
   sources: SourceLink[]
   assets: AssetRef[]
   thoughts: boolean
+  headingMode: HeadingMode
+  /** msgId → 重放成功的 Canvas 操作；重放失败的 canmore 消息走原始 JSON 兜底 */
+  canvas: Map<string, CanvasOp>
 }
 
 export function conversationToMarkdown(
@@ -61,7 +85,13 @@ export function conversationToMarkdown(
   const modelSlugs = [...new Set(rawSlugs)]
   const model = rawSlugs[rawSlugs.length - 1] ?? conv.default_model_slug
 
-  const ctx: RenderCtx = { sources: [], assets: [], thoughts: copts.thoughts !== false }
+  const ctx: RenderCtx = {
+    sources: [],
+    assets: [],
+    thoughts: copts.thoughts !== false,
+    headingMode: copts.headingMode ?? 'demote',
+    canvas: replayCanvas(messages),
+  }
   const turns = groupTurns(messages)
   let body = turns
     .map((t) => renderTurn(t, ctx))
@@ -139,11 +169,25 @@ function renderMessage(msg: Message, ctx: RenderCtx): string | null {
   const blocks: string[] = []
   const inlineImageIds = new Set<string>()
 
+  // canmore 工具的确认回执（role=tool）：内容已由重放侧呈现，不重复
+  if (msg.author.role === 'tool' && (msg.author.name ?? '').startsWith('canmore.')) return null
+
   switch (c.content_type) {
     case 'text': {
       const raw = joinTextParts(c)
-      if (msg.author.role === 'assistant' && recipient !== 'all') {
-        // Canvas / 联网等工具调用载荷（多为 JSON）：整块折叠嵌入，不丢内容
+      if (msg.author.role === 'assistant' && recipient.startsWith('canmore.')) {
+        // Canvas：patch 重放还原终稿；重放失败回退原始 JSON 折叠嵌入
+        const op = ctx.canvas.get(msg.id)
+        if (op) {
+          const rendered = renderCanvasOp(op, ctx)
+          if (rendered != null) blocks.push(rendered)
+        } else {
+          blocks.push(
+            callout('example', `工具调用 → \`${recipient}\``, fence(stripResidualMarkers(raw)), true),
+          )
+        }
+      } else if (msg.author.role === 'assistant' && recipient !== 'all') {
+        // 联网等其他工具调用载荷（多为 JSON）：整块折叠嵌入，不丢内容
         blocks.push(callout('example', `工具调用 → \`${recipient}\``, fence(stripResidualMarkers(raw)), true))
       } else {
         blocks.push(renderProse(raw, refs, ctx))
@@ -199,7 +243,23 @@ function renderMessage(msg: Message, ctx: RenderCtx): string | null {
 function renderProse(raw: string, refs: ContentReference[] | undefined, ctx: RenderCtx): string {
   const { text, sources } = restoreCitations(raw, refs)
   ctx.sources.push(...sources)
-  return demoteHeadings(convertMath(text))
+  return transformHeadings(convertMath(text), ctx.headingMode)
+}
+
+/** Canvas 操作的呈现：终稿整块嵌入（document 走排版管道，code 走围栏），中间版本一行说明。 */
+function renderCanvasOp(op: CanvasOp, ctx: RenderCtx): string | null {
+  if (op.kind === 'comment') {
+    const body = (op.comments ?? []).map((c) => `- ${c.comment}`).join('\n')
+    return callout('example', `Canvas 批注${op.docName ? ` · ${op.docName}` : ''}`, body, true)
+  }
+  if (op.finalContent != null) {
+    const lang = op.docType.startsWith('code/') ? op.docType.slice('code/'.length) : ''
+    const body = op.docType.startsWith('code/')
+      ? fence(op.finalContent, lang)
+      : transformHeadings(convertMath(op.finalContent), ctx.headingMode)
+    return callout('abstract', `Canvas · ${op.docName}`, body)
+  }
+  return op.kind === 'create' ? `*(Canvas 创建「${op.docName}」，终稿见后)*` : `*(Canvas 更新「${op.docName}」，终稿见后)*`
 }
 
 function renderThoughts(

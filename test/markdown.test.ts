@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { conversationToMarkdown, filenameFor } from '../src/convert/markdown'
+import { assetLink, conversationToMarkdown, filenameFor } from '../src/convert/markdown'
 import type { ConversationDetail } from '../src/types'
 import fixtureJson from './fixtures/basic.json'
 
@@ -290,5 +290,31 @@ describe('思考过程开关', () => {
     expect(off.markdown).not.toContain('分析问题')
     // 正文其他内容不受影响
     expect(off.markdown).toContain('$E=mc^2$')
+  })
+})
+
+describe('assetLink（P3 链接风格）', () => {
+  test('wikilink：图片嵌入 / 文件带别名', () => {
+    expect(assetLink('wikilink', 'attachments/ab-img.png', { embed: true })).toBe('![[attachments/ab-img.png]]')
+    expect(assetLink('wikilink', 'attachments/ab-doc.pdf', { label: '论文.pdf' })).toBe('[[attachments/ab-doc.pdf|论文.pdf]]')
+  })
+
+  test('wikilink 别名里的 | 和 ] 被替换', () => {
+    expect(assetLink('wikilink', 'a/b.pdf', { label: 'x|y]z' })).toBe('[[a/b.pdf|x-y-z]]')
+  })
+
+  test('markdown 标准链接：路径 URL 编码，标签转义', () => {
+    expect(assetLink('markdown', 'attachments/ab-图 1.png', { embed: true, label: '图 1.png' })).toBe('![图 1.png](attachments/ab-%E5%9B%BE%201.png)')
+    expect(assetLink('markdown', 'a/b.pdf', { label: 'x[1].pdf' })).toBe('[x\\[1\\].pdf](a/b.pdf)')
+  })
+})
+
+describe('headingMode（P3 排版风格）', () => {
+  test('strip 模式：消息内标题剥离为加粗行，角色标题保留', () => {
+    const { markdown: stripped } = conversationToMarkdown(fixture, '', { headingMode: 'strip' })
+    expect(stripped).toContain('\n# User\n')
+    expect(stripped).toContain('\n**我的问题**\n')
+    expect(stripped).not.toContain('\n## 我的问题\n')
+    expect(stripped).toContain('# 这行注释不该被降级') // 代码块不受影响
   })
 })

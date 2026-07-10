@@ -58,6 +58,8 @@ export interface ContentReferenceItem {
   url?: string | null
   attribution?: string | null
   snippet?: string | null
+  // 官方导出 zip：定位标记 token 的结构化字段（backend-api 用 matched_text，导出包里没有）
+  refs?: Array<{ ref_index?: number; ref_type?: string; turn_index?: number; [k: string]: unknown }>
   [k: string]: unknown
 }
 
@@ -68,6 +70,8 @@ export interface ContentReference {
   name?: string | null // type=file 时的文件名
   items?: ContentReferenceItem[]
   fallback_items?: ContentReferenceItem[]
+  // 官方导出 zip：type=file 的引用用它定位 filecite 标记
+  input_pointer?: { message_index?: number; file_index?: number; [k: string]: unknown } | null
   [k: string]: unknown
 }
 
@@ -107,7 +111,8 @@ export interface MappingNode {
   id: string
   message?: Message | null
   parent?: string | null
-  children: string[]
+  // 官方导出 zip 的 mapping 节点没有 children，只有 parent 链
+  children?: string[]
 }
 
 export interface ConversationDetail {

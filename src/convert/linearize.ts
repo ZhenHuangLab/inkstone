@@ -19,10 +19,15 @@ export function linearize(conv: ConversationDetail): Message[] {
 
 // current_node 缺失时兜底：取 create_time 最新的叶子
 function findLatestLeaf(mapping: Record<string, MappingNode>): string | null {
+  // 官方导出的节点没有 children，从 parent 链反推谁不是叶子
+  const hasChild = new Set<string>()
+  for (const node of Object.values(mapping)) {
+    if (node.parent != null) hasChild.add(node.parent)
+  }
   let best: string | null = null
   let bestTime = -Infinity
   for (const [id, node] of Object.entries(mapping)) {
-    if (node.children.length > 0) continue
+    if ((node.children ?? []).length > 0 || hasChild.has(id)) continue
     const t = node.message?.create_time ?? 0
     if (t >= bestTime) {
       bestTime = t
