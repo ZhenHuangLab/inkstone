@@ -183,7 +183,7 @@ describe('Branch 对话', () => {
   const { markdown } = conversationToMarkdown(conv as unknown as ConversationDetail)
 
   test('frontmatter 链接回父对话的导出文件', () => {
-    expect(markdown).toContain('branched_from: "[[原对话标题 ~aaaaaaaa]]"')
+    expect(markdown).toContain('branched_from: "[[原对话标题-aaaaaaaa]]"')
     expect(markdown).toContain(
       'branched_from_url: https://chatgpt.com/c/aaaaaaaa-1111-0000-0000-000000000000',
     )
@@ -191,16 +191,96 @@ describe('Branch 对话', () => {
 })
 
 describe('filenameFor', () => {
-  test('非法字符换成空格并压缩', () => {
-    expect(filenameFor('a/b:c*d?"<>|#^[]e', 'abc12345-rest')).toBe('a b c d e ~abc12345.md')
+  test('非法字符与空白归一为 - 并折叠', () => {
+    expect(filenameFor('a/b:c*d?"<>|#^[]e', 'abc12345-rest')).toBe('a-b-c-d-e-abc12345.md')
+    expect(filenameFor('带 空格 的  标题', 'abc12345-rest')).toBe('带-空格-的-标题-abc12345.md')
+  })
+
+  test('文件名不含空格和波浪线', () => {
+    const name = filenameFor('质能方程 E=mc^2 推导?', 'abc12345-rest')
+    expect(name).not.toMatch(/[\s~]/)
   })
 
   test('空标题回退 Untitled', () => {
-    expect(filenameFor('', 'abc12345-rest')).toBe('Untitled ~abc12345.md')
+    expect(filenameFor('', 'abc12345-rest')).toBe('Untitled-abc12345.md')
   })
 
   test('超长标题截断到 80 字符', () => {
     const name = filenameFor('长'.repeat(200), 'abc12345-rest')
-    expect(name.length).toBeLessThanOrEqual(80 + ' ~abc12345.md'.length)
+    expect(name.length).toBeLessThanOrEqual(80 + '-abc12345.md'.length)
+  })
+})
+
+describe('model 检测', () => {
+  const chainConv = (slugs: Array<string | undefined>, dflt?: string): ConversationDetail => {
+    const mapping: Record<string, unknown> = {}
+    let parent: string | null = null
+    let last = ''
+    slugs.forEach((slug, i) => {
+      const uid = `u${i}`
+      const aid = `a${i}`
+      mapping[uid] = {
+        id: uid,
+        parent,
+        children: [aid],
+        message: { id: uid, author: { role: 'user' }, content: { content_type: 'text', parts: ['问'] } },
+      }
+      mapping[aid] = {
+        id: aid,
+        parent: uid,
+        children: [],
+        message: {
+          id: aid,
+          author: { role: 'assistant' },
+          content: { content_type: 'text', parts: ['答'] },
+          metadata: slug ? { model_slug: slug } : {},
+        },
+      }
+      if (parent) (mapping[parent] as { children: string[] }).children.push(uid)
+      parent = aid
+      last = aid
+    })
+    return {
+      title: 'model 测试',
+      conversation_id: 'cccccccc-0000-0000-0000-000000000000',
+      current_node: last,
+      default_model_slug: dflt,
+      mapping,
+    } as unknown as ConversationDetail
+  }
+
+  test('消息级 model_slug 优先于 default_model_slug', () => {
+    const { markdown } = conversationToMarkdown(chainConv(['gpt-5-6-sol-pro'], 'gpt-5-6-pro'))
+    expect(markdown).toContain('model: gpt-5-6-sol-pro')
+    expect(markdown).not.toContain('model: gpt-5-6-pro')
+  })
+
+  test('中途切换模型：model 取最后一条，models 去重列出全部', () => {
+    const { markdown } = conversationToMarkdown(
+      chainConv(['gpt-5-6-pro', 'gpt-5-6-sol-pro', 'gpt-5-6-sol-pro'], 'gpt-5-6-pro'),
+    )
+    expect(markdown).toContain('model: gpt-5-6-sol-pro')
+    expect(markdown).toContain('models:\n  - gpt-5-6-pro\n  - gpt-5-6-sol-pro')
+  })
+
+  test('单一模型不输出 models 列表', () => {
+    const { markdown } = conversationToMarkdown(chainConv(['gpt-5-6-sol-pro']))
+    expect(markdown).not.toContain('models:')
+  })
+
+  test('无消息级 slug 时回退 default_model_slug', () => {
+    const { markdown } = conversationToMarkdown(chainConv([undefined], 'gpt-5-6-pro'))
+    expect(markdown).toContain('model: gpt-5-6-pro')
+  })
+})
+
+describe('思考过程开关', () => {
+  test('默认写入，thoughts: false 时剔除', () => {
+    expect(markdown).toContain('> [!quote]- 思考过程')
+    const off = conversationToMarkdown(fixture, '', { thoughts: false })
+    expect(off.markdown).not.toContain('思考过程')
+    expect(off.markdown).not.toContain('分析问题')
+    // 正文其他内容不受影响
+    expect(off.markdown).toContain('$E=mc^2$')
   })
 })

@@ -40,8 +40,8 @@
    - Canvas textdoc → MVP 整块嵌入，后续做 patch 重放还原终稿
    - **未知类型 → 原始 JSON 塞进折叠 callout，永不静默丢内容**
 6. **附件管道**：`file-service://` 与 `sediment://` 指针 → files 接口下载 → `attachments/` 按内容哈希去重 → 链接改写（wikilink `![[...]]` / 标准相对链接，可配）；下载失败留占位说明。
-7. **Frontmatter**：title、chat_id、url（`chatgpt.com/c/<id>`）、created、updated、model、tags —— 配 Dataview 即全库索引。
-8. **文件名**：`标题 ~短id.md` 防重名，id 保证增量覆盖稳定。
+7. **Frontmatter**：title、chat_id、url（`chatgpt.com/c/<id>`）、created、updated、model（实际生成消息的 model_slug，最后一条为准；多模型另列 models）、tags —— 配 Dataview 即全库索引。
+8. **文件名**：`标题-短id.md` 防重名（无空格/波浪线，非法字符与空白归一为 `-`），id 保证增量覆盖稳定。
 
 ## 输出形态
 

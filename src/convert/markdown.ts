@@ -27,6 +27,11 @@ export interface ConvertResult {
   assets: AssetRef[]
 }
 
+export interface ConvertOptions {
+  /** 是否把思维链（thoughts）写入导出，默认写入（折叠 callout） */
+  thoughts?: boolean
+}
+
 /** 附件占位符：转换层不做网络请求，下载与链接改写由调用方完成。 */
 export const assetToken = (fileId: string): string => `%%GEXPORT-ASSET-${fileId}%%`
 
@@ -36,17 +41,29 @@ const CONTROL_CHARS = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCo
 interface RenderCtx {
   sources: SourceLink[]
   assets: AssetRef[]
+  thoughts: boolean
 }
 
-export function conversationToMarkdown(conv: ConversationDetail, fallbackId = ''): ConvertResult {
+export function conversationToMarkdown(
+  conv: ConversationDetail,
+  fallbackId = '',
+  copts: ConvertOptions = {},
+): ConvertResult {
   const convId = String(conv.conversation_id ?? conv.id ?? fallbackId)
   const title = (conv.title ?? '').trim() || 'Untitled'
   const messages = linearize(conv)
-  const model =
-    conv.default_model_slug ??
-    messages.find((m) => m.author.role === 'assistant' && m.metadata?.model_slug)?.metadata?.model_slug
+  // 消息级 model_slug 才是实际生成回复的模型（default_model_slug 只是对话的默认档位，仅作回退）；
+  // 中途切换过模型时以最后一条为准，全部去重后记入 models
+  const modelSlugs = [
+    ...new Set(
+      messages
+        .filter((m) => m.author.role === 'assistant' && m.metadata?.model_slug)
+        .map((m) => m.metadata!.model_slug!),
+    ),
+  ]
+  const model = modelSlugs[modelSlugs.length - 1] ?? conv.default_model_slug
 
-  const ctx: RenderCtx = { sources: [], assets: [] }
+  const ctx: RenderCtx = { sources: [], assets: [], thoughts: copts.thoughts !== false }
   const turns = groupTurns(messages)
   let body = turns
     .map((t) => renderTurn(t, ctx))
@@ -78,6 +95,7 @@ export function conversationToMarkdown(conv: ConversationDetail, fallbackId = ''
     `created: ${toIso(conv.create_time)}`,
     `updated: ${toIso(conv.update_time)}`,
     model ? `model: ${model}` : null,
+    modelSlugs.length > 1 ? `models:\n${modelSlugs.map((s) => `  - ${s}`).join('\n')}` : null,
     branchedFrom ? `branched_from: ${yamlQuote(`[[${branchedFrom}]]`)}` : null,
     branchMeta
       ? `branched_from_url: https://chatgpt.com/c/${branchMeta.branching_from_conversation_id}`
@@ -92,20 +110,19 @@ export function conversationToMarkdown(conv: ConversationDetail, fallbackId = ''
   return { markdown: `${fm}\n\n${tidied.trim()}\n`, title, assets: ctx.assets }
 }
 
-/** `标题 ~短id.md`：防重名，且 id 稳定保证增量重导时覆盖同一文件。 */
+/** `标题-短id.md`：防重名，且 id 稳定保证增量重导时覆盖同一文件。 */
 export function filenameFor(title: string, convId: string): string {
-  const safe = sanitizeName(title).slice(0, 80).trim() || 'Untitled'
-  return `${safe} ~${convId.slice(0, 8)}.md`
+  const safe = sanitizeName(title).slice(0, 80).replace(/-+$/, '') || 'Untitled'
+  return `${safe}-${convId.slice(0, 8)}.md`
 }
 
-/** 文件名净化（跨平台非法字符 + Obsidian 链接敏感字符 + 控制字符）。 */
+/** 文件名净化：非法字符（跨平台 + Obsidian 链接敏感）与空白统一归一为 `-`，不留空格。 */
 export function sanitizeName(name: string): string {
   return name
-    .replace(/[/\\:*?"<>|#^[\]]/g, ' ')
     .replace(CONTROL_CHARS, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/^\.+/, '')
+    .replace(/[/\\:*?"<>|#^[\]\s]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|-+$/g, '')
 }
 
 function renderTurn(turn: Turn, ctx: RenderCtx): string | null {
@@ -154,6 +171,7 @@ function renderMessage(msg: Message, ctx: RenderCtx): string | null {
       blocks.push(callout('note', '运行输出', fence(stripResidualMarkers(c.text ?? '')), true))
       break
     case 'thoughts': {
+      if (!ctx.thoughts) break
       const t = renderThoughts(c, refs, ctx)
       if (t != null) blocks.push(t)
       break

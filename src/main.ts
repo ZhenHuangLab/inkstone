@@ -28,7 +28,7 @@ import {
   selectChanged,
   type Watermark,
 } from './state'
-import { mountPanel, type ExportOptions, type PanelHandle, type PickerItem } from './ui'
+import { mountPanel, type ExportFormat, type ExportOptions, type PanelHandle, type PickerItem } from './ui'
 import type { ConversationListItem } from './types'
 
 // 图片始终下载，上限只防异常；文件类附件的上限由面板设置（opts.maxFileMB）
@@ -39,15 +39,13 @@ let activeCancel: CancelToken | null = null
 let pickedList: ConversationListItem[] | null = null
 
 mountPanel({
-  onStart(kind, panel, opts) {
-    if (kind === 'single') void exportSingle(panel, opts)
-    else void startExport(kind, panel, opts)
+  onExport(scope, format, ids, panel, opts) {
+    if (scope === 'current') void exportSingle(format, panel, opts)
+    else if (scope === 'selection') void exportSelection(ids, format, panel, opts)
+    else void startExport(format, panel, opts)
   },
   onPickList(panel) {
     void loadPickList(panel)
-  },
-  onExportSelection(ids, panel, opts) {
-    void exportSelection(ids, panel, opts)
   },
   onCancel() {
     if (activeCancel) activeCancel.cancelled = true
@@ -84,19 +82,24 @@ async function loadPickList(panel: PanelHandle): Promise<void> {
   }
 }
 
-async function exportSelection(ids: string[], panel: PanelHandle, opts: ExportOptions): Promise<void> {
+async function exportSelection(
+  ids: string[],
+  format: ExportFormat,
+  panel: PanelHandle,
+  opts: ExportOptions,
+): Promise<void> {
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
   try {
     const wanted = new Set(ids)
     const items = (pickedList ?? []).filter((i) => wanted.has(i.id))
     if (items.length === 0) {
-      panel.setStatus('所选对话已不在列表缓存里，请重新点「选择对话…」')
+      panel.setStatus('所选对话已不在列表缓存里，请重新拉取列表')
       return
     }
     panel.setStatus('获取登录态…')
     const token = await getAccessToken(cancel)
-    await exportItems('markdown', items, 0, token, cancel, panel, opts)
+    await exportItems(format, items, 0, token, cancel, panel, opts)
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
   } finally {
@@ -119,7 +122,7 @@ interface Failure {
 
 /** 抓取 + 转换 + 附件下载的共享处理器：全量导出和单对话导出都用它。 */
 function createProcessor(
-  kind: 'markdown' | 'json',
+  kind: ExportFormat,
   token: string,
   cancel: CancelToken,
   panel: PanelHandle,
@@ -169,7 +172,7 @@ function createProcessor(
       files[path] = strToU8(JSON.stringify(conv, null, 2))
       return { path }
     }
-    const { markdown, title, assets } = conversationToMarkdown(conv, item.id)
+    const { markdown, title, assets } = conversationToMarkdown(conv, item.id, { thoughts: opts.thoughts })
     let md = markdown
     let assetIdx = 0
     for (const a of assets) {
@@ -192,8 +195,8 @@ function createProcessor(
   return { files, processConversation }
 }
 
-/** 只导出当前打开的对话：无附件下裸 .md，有附件打小 zip。 */
-async function exportSingle(panel: PanelHandle, opts: ExportOptions): Promise<void> {
+/** 只导出当前打开的对话：markdown 无附件下裸 .md、有附件打小 zip；json 恒为裸 .json。 */
+async function exportSingle(format: ExportFormat, panel: PanelHandle, opts: ExportOptions): Promise<void> {
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
   try {
@@ -204,8 +207,15 @@ async function exportSingle(panel: PanelHandle, opts: ExportOptions): Promise<vo
     }
     panel.setStatus('获取登录态…')
     const token = await getAccessToken(cancel)
-    const proc = createProcessor('markdown', token, cancel, panel, opts)
     panel.setStatus('抓取当前对话…')
+    if (format === 'json') {
+      const conv = await fetchConversation(token, m[1]!, cancel)
+      const name = filenameFor((conv.title ?? '').trim() || 'Untitled', m[1]!).replace(/\.md$/, '.json')
+      downloadBlob(name, strToU8(JSON.stringify(conv, null, 2)), 'application/json')
+      panel.setStatus(`完成：${name}`)
+      return
+    }
+    const proc = createProcessor('markdown', token, cancel, panel, opts)
     const { path } = await proc.processConversation({ id: m[1]!, title: null })
     const mdName = path.split('/').pop()!
     const hasAttachments = Object.keys(proc.files).some((p) => p !== path)
@@ -226,11 +236,7 @@ async function exportSingle(panel: PanelHandle, opts: ExportOptions): Promise<vo
   }
 }
 
-async function startExport(
-  kind: 'markdown' | 'json',
-  panel: PanelHandle,
-  opts: ExportOptions,
-): Promise<void> {
+async function startExport(kind: ExportFormat, panel: PanelHandle, opts: ExportOptions): Promise<void> {
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
   try {
@@ -268,7 +274,7 @@ async function startExport(
 
 /** 全量 / 增量 / 所选 共用的导出主体：两遍抓取 + 打包 + 水位线推进。 */
 async function exportItems(
-  kind: 'markdown' | 'json',
+  kind: ExportFormat,
   list: ConversationListItem[],
   skipped: number,
   token: string,
