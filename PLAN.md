@@ -1,4 +1,4 @@
-# Inkstone（砚）— ChatGPT 对话高保真导出（→ Obsidian）
+# Inkstone（砚）— ChatGPT 对话导出
 
 > 名取「砚」：把 GPT 的原始输出研磨成能写进笔记的墨；石对石（砚 ↔ Obsidian）。
 
@@ -6,7 +6,7 @@
 
 ## 目标
 
-- 在 chatgpt.com 页内一键**批量导出全部对话**为 Obsidian 友好的 Markdown
+- 在 chatgpt.com 页内一键**批量导出全部对话**为 Obsidian 等笔记软件友好的 Markdown
 - 高保真：公式、引用链接、代码、图片/附件、思维链、Canvas 不丢不乱
 - 增量同步：重跑只导出有变化的对话
 - 全程本地处理，不经任何第三方服务
@@ -59,21 +59,24 @@
 
 ```
 inkstone/
-  package.json          # bun
+  package.json          # bun（scripts: dev/build/test/typecheck/offline）
   vite.config.ts        # vite-plugin-monkey
+  cli/
+    export.ts           # 官方导出 zip → vault 的离线 CLI（bun 直跑，P4.2）
   src/
-    main.ts             # UI 注入 + 流程编排
+    main.ts             # UI 注入 + 流程编排 + 输出 Sink（zip/直写）
     api.ts              # backend-api 客户端（token/列表/全文/附件）
     convert/
       linearize.ts      # mapping 树 → 线性消息
-      markdown.ts       # 消息 → md（content_type 分发）
+      markdown.ts       # 消息 → md（content_type 分发；assetLink 链接风格）
       math.ts           # 公式定界符转换（代码块感知）
-      citations.ts      # 引用标记还原
-      headings.ts       # 标题降级
+      citations.ts      # 引用标记还原（matched_text 通道 + 官方导出 token/顺序配对通道）
+      headings.ts       # 标题降级 / 剥离为加粗
+      canvas.ts         # Canvas textdoc patch 重放
     output/
       zip.ts            # fflate 打包
-      fsaccess.ts       # 直写 vault（v2）
-    state.ts            # 增量水位线
+      fsaccess.ts       # File System Access 直写 vault（句柄存 IndexedDB）
+    state.ts            # 增量水位线 + 设置持久化
     ui.ts               # 浮动面板 + 进度
   test/
     fixtures/*.json     # 真实对话 JSON（脱敏）
@@ -85,10 +88,10 @@ inkstone/
 - **P1 骨架 + 取数** ✅（2026-07-08）：脚手架、UI 注入、API 客户端、全量抓取、原始 JSON zip 导出 + 基础 Markdown（线性化/公式/标题降级/frontmatter/排版）
 - **P2 保真度** ✅（2026-07-08）：引用还原（content_references → 行内链接 + Sources）、附件管道（图片全下 / 文件 ≤2MB）、thoughts/代码解释器类型、全局限速 + 失败重试（Canvas 精细还原顺延到 P3，MVP 为折叠嵌入）
 - **P2.5** ✅（2026-07-08）：增量同步（提前自 P3）、单对话导出、附件上限设置、Branch 对话 frontmatter 回链父对话
-- **P3 体验**：File System Access 直写 vault、更多设置（排版风格/链接风格）、Canvas patch 重放
+- **P3 体验** ✅（2026-07-10）：File System Access 直写 vault（目录句柄存 IndexedDB 跨会话复用，Firefox 锁死 zip）、链接风格（wikilink / 标准 md）与消息内标题模式（降级 / 剥离为加粗）设置、Canvas patch 重放（create/update 重放还原终稿，重放失败回退原始 JSON 嵌入；账号历史里无真实 Canvas 数据，仅合成 fixture 验证，待真实数据回归）
 - **P4 脱离油猴（用户明确期望）**：转换层（convert/）零浏览器依赖、api.ts 只依赖 fetch，天然可复用到：
-  1. **MV3 浏览器扩展**——同一套 src，加 manifest + content script 打包目标（vite 多入口）；不再依赖 Tampermonkey，可上架商店
-  2. **官方导出 zip 的离线 CLI**（Bun 直接跑）——完全不碰 backend-api，靠 Settings→Export 的 zip 输入，零限流风险
+  1. **MV3 浏览器扩展**——同一套 src，加 manifest + content script 打包目标（vite 多入口）；不再依赖 Tampermonkey，可上架商店（用户拍板：等功能完善后再做/上架）
+  2. **官方导出 zip 的离线 CLI** ✅（2026-07-10，`bun run offline <zip|目录> [-o 输出]`）——完全不碰 backend-api，零限流风险；432 对话 + 248 附件 ~8s 转完；支持 `--link-style/--heading-mode/--no-thoughts/--no-assets`
   3. Claude/Gemini adapter
 
 ## 实战经验（2026-07-08 E2E，344 对话实测）
@@ -99,6 +102,14 @@ inkstone/
 - 附件元数据 `size` 不可靠（library 文件报 0），大小上限要靠 Content-Length + 实际字节双重护栏
 - `sources_footnote` 引用的 `matched_text` 可能是一个裸空格——替换前必须验证 matched_text 真的是引用标记
 - 模型会写同长度反引号嵌套围栏（```md 内套 ```bash），任何 CommonMark 状态机都会错位——引用剥离不能依赖代码感知
+
+## 实战经验（2026-07-10 官方导出 zip，432 对话实测）
+
+- 官方 zip 只保留 user/assistant 可见消息：tool/system 全剥离，Canvas、代码解释器载荷、recipient 字段都不存在——高保真必须走 backend-api，官方 zip 是保底
+- mapping 节点只有 parent 链没有 children；对话级 create/update_time 有一批被服务端迁移重写（指纹：create==update==导出前一天，2023 老对话 47/432 中招），要用消息时间修正
+- 附件：`sediment://file_X` ↔ 包内 `file_X.dat`，原名在 conversation_asset_file_names.json；被引用附件可能不在包里（23/271，服务端已过期删除），须留占位
+- content_references 没有 matched_text/start_idx：file 引用用 `input_pointer(message_index, file_index)` 精确定位；cite 标记正文里的 turn 号是另一套大数编号，token 对不上——但「cite 标记数 == web 引用数」503/503 成立，按出现顺序配对即可全量还原
+- Branch 对话只有 branching_from_conversation_title 没有 id；分支会整份复制父对话消息 id，按消息 id 反查会命中父 + 各兄弟分支，须再按标题精确匹配消歧（唯一命中才认）
 
 ## 风险
 
