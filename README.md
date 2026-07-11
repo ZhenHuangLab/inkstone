@@ -25,7 +25,9 @@
 ## 安装
 
 1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)
-2. 构建并安装脚本：
+2. 点击安装 [最新版 inkstone.user.js](https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js)（脚本头内置更新地址，之后发新版会自动更新）
+
+或从源码构建：
 
 ```bash
 bun install
@@ -36,7 +38,7 @@ bun run build        # 产物 dist/inkstone.user.js，拖进 Tampermonkey 即可
 
 ## 使用
 
-打开 chatgpt.com（已登录），点右下角绿色 ⇩ 按钮 → 选 Markdown zip 或原始 JSON zip → 解压到 Obsidian vault。
+打开 chatgpt.com（已登录），点顶栏 Share 左侧的 ⤓ 按钮（位置可在面板「高级设置 → 按钮位置」换成输入框旁）→ 选 Markdown zip 或原始 JSON zip → 解压到 Obsidian vault。UI 主题色自动跟随 ChatGPT 的外观设置（明暗 + accent color）。
 
 ## 开发
 

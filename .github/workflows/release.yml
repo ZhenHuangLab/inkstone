@@ -1,0 +1,35 @@
+# 推送 v* tag 时：构建 → 发 GitHub Release（挂 userscript 附件）→ 更新 release 分支（GreasyFork 同步源）
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/inkstone.user.js
+          generate_release_notes: true
+      # GreasyFork 走「从 URL 同步」+ GitHub webhook：同步源必须是仓库内的原始文件，
+      # 所以把构建产物固定推到 release 分支（dist/ 在 main 是 gitignore 的）
+      - name: 更新 release 分支（GreasyFork 同步源）
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B release
+          git add -f dist/inkstone.user.js
+          git commit -m "build: inkstone.user.js ${GITHUB_REF_NAME}"
+          git push -f origin release
