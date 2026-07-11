@@ -90,6 +90,7 @@ inkstone/
 - **P2.5** ✅（2026-07-08）：增量同步（提前自 P3）、单对话导出、附件上限设置、Branch 对话 frontmatter 回链父对话
 - **P3 体验** ✅（2026-07-10）：File System Access 直写 vault（目录句柄存 IndexedDB 跨会话复用，Firefox 锁死 zip）、链接风格（wikilink / 标准 md）与消息内标题模式（降级 / 剥离为加粗）设置、Canvas patch 重放（create/update 重放还原终稿，重放失败回退原始 JSON 嵌入；账号历史里无真实 Canvas 数据，仅合成 fixture 验证，待真实数据回归）
 - **P3.5 目录定制** ✅（2026-07-11）：笔记/附件子文件夹可设置（面板 + CLI `--notes-dir`/`--attachments-dir`），附件目录改挂笔记目录下、链接改为相对 .md 的严格相对路径；完成文案报附件失败/超限数（油猴直写端待真实页面回归）
+- **UI v3 液态玻璃** ✅（2026-07-11）：Apple liquid glass 重设计，主色运行时跟随页面 accent（`html[data-chat-theme]` → `--{theme}-theme-submit-btn-bg/-text/entity-accent`，变量消失时退回扫描含 accent 最饱和色 → 黑白中性）；导出钮双位置可设（默认贴顶栏 Share 左侧、底色同款 translucent blur(24px)，备选输入框旁玻璃圆钮），**无固定默认位置**：找不到锚点不现身、锚点短暂消失位置冻结、消失 4s+ 整体隐藏；点击后图标变向下箭头。轻量约束：blur 只上两层、动效仅 transform/opacity、@supports 与 prefers-reduced-transparency 降级。已通过 CDP 注入真实页面验证（紫色 accent 提取、双模式几何、会话切换不闪跳、无锚点页隐藏）
 - **P4 脱离油猴（用户明确期望）**：转换层（convert/）零浏览器依赖、api.ts 只依赖 fetch，天然可复用到：
   1. **MV3 浏览器扩展**——同一套 src，加 manifest + content script 打包目标（vite 多入口）；不再依赖 Tampermonkey，可上架商店（用户拍板：等功能完善后再做/上架）
   2. **官方导出 zip 的离线 CLI** ✅（2026-07-10，`bun run offline <zip|目录> [-o 输出]`）——完全不碰 backend-api，零限流风险；432 对话 + 248 附件 ~8s 转完；支持 `--link-style/--heading-mode/--no-thoughts/--no-assets`

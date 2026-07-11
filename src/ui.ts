@@ -34,6 +34,8 @@ export interface PanelSettings {
   target: 'zip' | 'folder'
   notesDir: string
   attachmentsDir: string
+  /** 按钮位置：输入框旁（玻璃圆钮）或顶部 Share 左侧（原生幽灵钮） */
+  fabPos: 'composer' | 'header'
 }
 
 export interface PickerItem {
@@ -73,58 +75,128 @@ export interface PanelCallbacks {
   }
 }
 
-// 设计系统（ui-ux-pro-max 合成）：极简开发者工具面板，Linear 风
-// —— 语义 token 双主题、发丝线边框、tabular 数字、150-200ms cubic-bezier(0.16,1,0.3,1) 微交互
+// 设计系统（ui-ux-pro-max 合成）：Apple 液态玻璃（Liquid Glass）
+// 主色跟随当前页面：运行时探测 ChatGPT 的 accent 自定义属性（用户可在 ChatGPT 里改主题色），
+// 探测不到时用黑/白中性兜底（即 ChatGPT 默认配色的发送键观感）；下方 token 只是兜底值。
+// 轻量约束：backdrop-filter 只上 fab/panel 两层（面板 display:none 时零渲染开销），
+// 面板内部一律普通半透明填充不嵌套玻璃；动效只走 transform/opacity（绝不动 blur/filter）；
+// 高光扫过用纯 transform 位移；不用色差/SVG morphing/hue-rotate 这类高开销滤镜。
 const STYLE = `
   :host { all: initial; }
   :host {
-    --bg: #ffffff; --fg: #171717; --muted: #6f6f6f;
-    --border: rgba(0, 0, 0, .10); --hover: rgba(0, 0, 0, .045);
-    --track: rgba(0, 0, 0, .05); --raised: #ffffff;
-    --accent: #5e6ad2; --accent-hover: #6b77dd; --accent-fg: #ffffff;
-    --danger: #b3372a; --cta-glow: none;
-    --shadow: 0 12px 32px rgba(0, 0, 0, .14), 0 2px 8px rgba(0, 0, 0, .06);
+    --fg: #0d0d0d; --muted: #5d5d63;
+    --glass: rgba(255, 255, 255, .62); --solid: #f7f7f8;
+    --edge: rgba(255, 255, 255, .65);
+    --border: rgba(13, 13, 13, .08);
+    --hover: rgba(13, 13, 13, .05); --track: rgba(13, 13, 13, .06);
+    --thumb: rgba(255, 255, 255, .9);
+    --accent: #0d0d0d; --accent-hover: #3a3a3a; --accent-fg: #ffffff;
+    --ring: #0d0d0d; --danger: #b3372a;
+    --sheen: rgba(255, 255, 255, .5);
+    --cta-glow: 0 5px 18px rgba(0, 0, 0, .22);
+    --shadow: 0 16px 48px rgba(0, 0, 0, .16), 0 2px 10px rgba(0, 0, 0, .06);
     --ease: cubic-bezier(.16, 1, .3, 1);
     color-scheme: light;
   }
   :host([data-theme="dark"]) {
-    --bg: #26262a; --fg: #ededef; --muted: #9a9aa3;
-    --border: rgba(255, 255, 255, .09); --hover: rgba(255, 255, 255, .06);
-    --track: rgba(255, 255, 255, .07); --raised: #3a3a40;
-    --accent: #5e6ad2; --accent-hover: #6b77dd; --accent-fg: #ffffff;
-    --danger: #e8836f; --cta-glow: 0 2px 14px rgba(94, 106, 210, .35);
-    --shadow: 0 12px 32px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
+    --fg: #f2f2f3; --muted: #a0a0a9;
+    --glass: rgba(30, 30, 34, .62); --solid: #2c2c31;
+    --edge: rgba(255, 255, 255, .12);
+    --border: rgba(255, 255, 255, .10);
+    --hover: rgba(255, 255, 255, .07); --track: rgba(255, 255, 255, .08);
+    --thumb: rgba(255, 255, 255, .17);
+    --accent: #ececec; --accent-hover: #ffffff; --accent-fg: #0d0d0d;
+    --ring: #ececec; --danger: #e8836f;
+    --sheen: rgba(255, 255, 255, .22);
+    --cta-glow: 0 5px 18px rgba(0, 0, 0, .45);
+    --shadow: 0 16px 48px rgba(0, 0, 0, .55), 0 2px 10px rgba(0, 0, 0, .3);
     color-scheme: dark;
   }
   * {
     box-sizing: border-box;
-    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", Roboto, sans-serif;
   }
   button { cursor: pointer; font-family: inherit; color: inherit; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
   input[type="checkbox"] { accent-color: var(--accent); margin: 0; width: 14px; height: 14px; cursor: pointer; }
 
   .fab {
-    position: fixed; right: 20px; bottom: 88px; z-index: 2147483646;
-    width: 44px; height: 44px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
-    transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+    position: fixed; right: var(--fab-right, 20px); bottom: var(--fab-bottom, 88px); z-index: 2147483646;
+    width: 44px; height: 44px; border-radius: 50%; overflow: hidden;
+    visibility: hidden; /* 定位完成（.in）前不现身，避免从默认角落跳到输入框旁 */
+    color: var(--fg); border: 1px solid var(--border);
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: inset 0 1px 0 var(--edge), 0 6px 20px rgba(0, 0, 0, .18);
+    /* right/bottom 过渡只在布局变化的一瞬生效（侧栏开合、输入框长高），平时零开销 */
+    transition: transform .15s var(--ease), background-color .2s var(--ease), color .2s var(--ease),
+      right .25s var(--ease), bottom .25s var(--ease);
   }
+  .fab.in { visibility: visible; animation: pop .3s var(--ease); }
+  @keyframes pop { from { opacity: 0; transform: scale(.5); } }
   .fab:hover { transform: scale(1.06); }
   .fab:active { transform: scale(.94); }
   .fab svg { display: block; }
+  .fab .ic {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity .18s var(--ease), transform .22s var(--ease);
+  }
+  .fab .ic-arrow { opacity: 0; transform: translateY(-9px); }
+  .fab.open { background: var(--accent); color: var(--accent-fg); border-color: transparent;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), var(--cta-glow); }
+  .fab.open .ic-dl { opacity: 0; transform: translateY(9px); }
+  .fab.open .ic-arrow { opacity: 1; transform: none; }
+  .fab::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(115deg, transparent 35%, var(--sheen) 50%, transparent 65%);
+    transform: translateX(-130%);
+  }
+  .fab:hover::after { transform: translateX(130%); transition: transform .6s ease; }
+
+  /* header 模式：仿 ChatGPT 顶栏 Share/「…」——36px、圆角 8px、
+     底色照抄页面 translucent-surface（透明 + blur(24px) 液态玻璃，无阴影），
+     悬浮才出圆角矩形底色；无高光扫过 */
+  :host([data-pos="header"]) .fab {
+    width: 36px; height: 36px; border-radius: 8px;
+    background: transparent; border-color: transparent; box-shadow: none;
+    -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
+  }
+  :host([data-pos="header"]) .fab.in { animation: fadein .2s var(--ease); }
+  :host([data-pos="header"]) .fab:hover { background: var(--hover); transform: none; }
+  :host([data-pos="header"]) .fab:active { background: var(--track); transform: none; }
+  :host([data-pos="header"]) .fab::after { content: none; }
+  :host([data-pos="header"]) .fab.open {
+    background: var(--hover); color: var(--fg); border-color: transparent; box-shadow: none;
+  }
+  @keyframes fadein { from { opacity: 0; } }
 
   .panel {
-    position: fixed; right: 20px; bottom: 144px; z-index: 2147483647;
-    width: 304px; padding: 16px; border-radius: 16px;
-    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
-    box-shadow: var(--shadow); font-size: 13px; line-height: 1.5;
-    display: none; max-height: 72vh; overflow-y: auto;
+    position: fixed; right: var(--fab-right, 20px); bottom: calc(var(--fab-bottom, 88px) + 56px); z-index: 2147483647;
+    width: 304px; padding: 16px; border-radius: 20px;
+    color: var(--fg); border: 1px solid var(--border);
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    box-shadow: inset 0 1px 0 var(--edge), var(--shadow);
+    font-size: 13px; line-height: 1.5;
+    display: none; overflow-y: auto;
+    max-height: min(72vh, calc(100vh - var(--fab-bottom, 88px) - 72px));
+    max-width: calc(100vw - 32px);
+    transform-origin: 100% 100%;
+    transition: right .25s var(--ease), bottom .25s var(--ease);
   }
-  .panel.open { display: block; animation: rise .18s var(--ease); }
-  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  .panel.open { display: block; animation: rise .22s var(--ease); }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+  /* header 模式：面板从按钮下方展开 */
+  :host([data-pos="header"]) .panel {
+    bottom: auto; top: var(--panel-top, 56px);
+    max-height: min(72vh, calc(100vh - var(--panel-top, 56px) - 24px));
+    transform-origin: 100% 0;
+  }
+  :host([data-pos="header"]) .panel.open { animation-name: drop; }
+  @keyframes drop { from { opacity: 0; transform: translateY(-10px) scale(.97); } }
   .head { font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
 
   .sec {
@@ -132,14 +204,17 @@ const STYLE = `
     text-transform: uppercase; letter-spacing: .07em; margin: 14px 0 6px;
   }
 
-  .seg { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--track); }
+  .seg { display: flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--track); }
   .seg button {
-    flex: 1; padding: 6px 0; border: none; border-radius: 7px;
+    flex: 1; padding: 6px 0; border: none; border-radius: 8px;
     background: transparent; color: var(--muted); font-size: 12px; font-weight: 500;
     transition: color .15s var(--ease), background .15s var(--ease);
   }
   .seg button:hover:not(:disabled):not(.on) { color: var(--fg); }
-  .seg button.on { background: var(--raised); color: var(--fg); box-shadow: 0 1px 4px rgba(0, 0, 0, .18); }
+  .seg button.on {
+    background: var(--thumb); color: var(--fg);
+    box-shadow: inset 0 1px 0 var(--edge), 0 1px 5px rgba(0, 0, 0, .16);
+  }
   .seg button:disabled { cursor: default; opacity: .5; }
 
   .picker { display: none; margin-top: 8px; }
@@ -202,7 +277,7 @@ const STYLE = `
   .adv input[type="text"]::placeholder { color: var(--muted); }
   .adv select {
     padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px;
-    font-size: 12px; background: var(--bg); color: var(--fg); outline: none;
+    font-size: 12px; background: var(--solid); color: var(--fg); outline: none;
     transition: border-color .15s var(--ease);
   }
   .adv select:focus { border-color: var(--accent); }
@@ -214,12 +289,20 @@ const STYLE = `
   .reset:hover { color: var(--fg); }
 
   .go {
-    margin-top: 14px; width: 100%; padding: 9px; border-radius: 10px; border: none;
-    background: var(--accent); color: var(--accent-fg); box-shadow: var(--cta-glow);
+    margin-top: 14px; width: 100%; padding: 9px; border-radius: 12px; border: none;
+    position: relative; overflow: hidden;
+    background: var(--accent); color: var(--accent-fg);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), var(--cta-glow);
     font-size: 13px; font-weight: 600;
     transition: background .15s var(--ease), transform .1s var(--ease);
   }
+  .go::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, .3) 50%, transparent 65%);
+    transform: translateX(-130%);
+  }
   .go:hover:not(:disabled) { background: var(--accent-hover); }
+  .go:hover:not(:disabled)::after { transform: translateX(130%); transition: transform .6s ease; }
   .go:active:not(:disabled) { transform: scale(.98); }
   .go:disabled { opacity: .45; cursor: default; box-shadow: none; }
 
@@ -237,6 +320,16 @@ const STYLE = `
   .cancel:hover:not(:disabled) { background: var(--hover); }
   .cancel.visible { display: block; }
 
+  /* 玻璃降级：不支持 backdrop-filter 或用户偏好降低透明度时改用实色 */
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .fab, .panel { background: var(--solid); }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .fab, .panel, :host([data-pos="header"]) .fab {
+      background: var(--solid);
+      -webkit-backdrop-filter: none; backdrop-filter: none;
+    }
+  }
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
   }
@@ -244,6 +337,7 @@ const STYLE = `
 
 // 图标统一 Lucide 线型、stroke 2（icon-style-consistent）
 const ICON_DOWNLOAD = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>`
+const ICON_ARROW_DOWN = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>`
 const ICON_CHEVRON = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>`
 const ICON_RELOAD = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>`
 
@@ -253,14 +347,116 @@ export function mountPanel(cb: PanelCallbacks): void {
   host.dataset['inkstone'] = ''
   const root = host.attachShadow({ mode: 'open' })
 
-  // 跟随 ChatGPT 主题（html.dark class）
+  // —— 主色跟随当前页面 ——
+  // ChatGPT 的 accent 方案（2026-07 实测）：html[data-chat-theme="purple"] + 每主题一族变量
+  // --{theme}-theme-submit-btn-bg/-text（发送键配色）与 --{theme}-theme-entity-accent。
+  // 直接读当前主题的发送键变量作主色；改版后变量消失时退回「扫根节点含 accent 的最饱和颜色」，
+  // 再不行维持样式表黑/白中性兜底。开销：常规路径每次 3 个 getPropertyValue，全量扫描仅兜底时发生。
+  let probe: HTMLSpanElement | null = null
+  const parseColor = (raw: string): [number, number, number] | null => {
+    const s = raw.trim()
+    if (!s) return null
+    // Tailwind 风格裸三元组「137 82 238」
+    const t = /^(\d{1,3})[ ,]+(\d{1,3})[ ,]+(\d{1,3})$/.exec(s)
+    if (t) return [Math.min(255, Number(t[1])), Math.min(255, Number(t[2])), Math.min(255, Number(t[3]))]
+    if (!CSS.supports('color', s)) return null
+    if (!probe) {
+      probe = document.createElement('span')
+      probe.style.display = 'none'
+    }
+    if (!probe.isConnected) document.body.append(probe)
+    probe.style.color = s
+    const c = getComputedStyle(probe).color
+    const m = /^rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?\)/.exec(c)
+    if (m) {
+      if (m[4] !== undefined && Number(m[4]) < 0.9) return null
+      return [Number(m[1]), Number(m[2]), Number(m[3])]
+    }
+    // ChatGPT 部分变量是 color(display-p3 …)；按 sRGB 读，色差可忽略
+    const p = /^color\((?:srgb|display-p3)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\)/.exec(c)
+    if (p) {
+      if (p[4] !== undefined && Number(p[4]) < 0.9) return null
+      return [
+        Math.round(Number(p[1]) * 255),
+        Math.round(Number(p[2]) * 255),
+        Math.round(Number(p[3]) * 255),
+      ]
+    }
+    return null
+  }
+  let accentApplied = ''
+  const applyAccent = (
+    bg: [number, number, number],
+    fgIn: [number, number, number] | null,
+    ringIn: [number, number, number] | null,
+  ): void => {
+    const [r, g, b] = bg
+    const ring = ringIn ?? bg
+    const key = `${r},${g},${b}|${fgIn?.join() ?? ''}|${ring.join()}`
+    if (key === accentApplied) return
+    accentApplied = key
+    const lin = (c: number) => {
+      const s = c / 255
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+    }
+    const L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    // 页面没给文字色时自选：白字对比度够 4.5:1 就用白，否则近黑
+    const fg = fgIn ?? (1.05 / (L + 0.05) >= 4.5 ? [255, 255, 255] : [13, 13, 13])
+    // hover：暗色变亮、亮色变暗各挪约一成
+    const toward = L < 0.5 ? 255 : 0
+    const hov = bg.map((c) => Math.round(c + (toward - c) * 0.12))
+    host.style.setProperty('--accent', `rgb(${r} ${g} ${b})`)
+    host.style.setProperty('--accent-hover', `rgb(${hov[0]} ${hov[1]} ${hov[2]})`)
+    host.style.setProperty('--accent-fg', `rgb(${fg[0]} ${fg[1]} ${fg[2]})`)
+    host.style.setProperty('--ring', `rgb(${ring[0]} ${ring[1]} ${ring[2]})`)
+    host.style.setProperty('--cta-glow', `0 5px 18px rgba(${r}, ${g}, ${b}, .3)`)
+  }
+  let accentScanTick = 0
+  const detectAccent = (force = false): void => {
+    const rootEl = document.documentElement
+    const rootCS = getComputedStyle(rootEl)
+    const theme = rootEl.getAttribute('data-chat-theme') || 'default'
+    const bg = parseColor(rootCS.getPropertyValue(`--${theme}-theme-submit-btn-bg`))
+    if (bg) {
+      applyAccent(
+        bg,
+        parseColor(rootCS.getPropertyValue(`--${theme}-theme-submit-btn-text`)),
+        parseColor(rootCS.getPropertyValue(`--${theme}-theme-entity-accent`)),
+      )
+      return
+    }
+    // 改版兜底：扫 html/body 上含 accent 的自定义属性，取最饱和的可解析颜色
+    if (!force && accentScanTick++ % 15 !== 0) return
+    let best: [number, number, number] | null = null
+    let bestSat = 24 // 饱和度阈值，滤掉灰白黑
+    for (const el of [rootEl, document.body]) {
+      const map = (
+        el as HTMLElement & { computedStyleMap?: () => Iterable<[string, unknown]> }
+      ).computedStyleMap?.()
+      if (!map) continue
+      for (const [name, values] of map) {
+        if (!name.startsWith('--') || !name.toLowerCase().includes('accent')) continue
+        const rgb = parseColor(String(Array.isArray(values) ? (values[0] ?? '') : values))
+        if (!rgb) continue
+        const sat = Math.max(...rgb) - Math.min(...rgb)
+        if (sat > bestSat) {
+          bestSat = sat
+          best = rgb
+        }
+      }
+    }
+    if (best) applyAccent(best, null, null)
+  }
+
+  // 跟随 ChatGPT 主题（html.dark class）与 accent 设置（html[data-chat-theme]）
   const syncTheme = () => {
     host.dataset['theme'] = document.documentElement.classList.contains('dark') ? 'dark' : 'light'
+    detectAccent(true) // 明暗/主题色切换时 accent 值跟着变
   }
   syncTheme()
   new MutationObserver(syncTheme).observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ['class'],
+    attributeFilter: ['class', 'data-chat-theme'],
   })
 
   const style = document.createElement('style')
@@ -271,7 +467,10 @@ export function mountPanel(cb: PanelCallbacks): void {
   fab.className = 'fab'
   fab.title = 'Inkstone — 导出对话'
   fab.setAttribute('aria-label', 'Inkstone — 导出对话')
-  fab.innerHTML = ICON_DOWNLOAD
+  fab.setAttribute('aria-haspopup', 'dialog')
+  fab.setAttribute('aria-expanded', 'false')
+  // 关闭态 = 下载图标；打开态 = 向下箭头（收起面板），两层交叉淡出
+  fab.innerHTML = `<span class="ic ic-dl">${ICON_DOWNLOAD}</span><span class="ic ic-arrow">${ICON_ARROW_DOWN}</span>`
 
   const panel = document.createElement('div')
   panel.className = 'panel'
@@ -313,6 +512,10 @@ export function mountPanel(cb: PanelCallbacks): void {
 
     <button class="adv-toggle" aria-expanded="false">${ICON_CHEVRON} 高级设置</button>
     <div class="adv">
+      <label class="row" data-row="fabPos"><span>按钮位置</span><select data-opt="fabPos">
+        <option value="composer">输入框旁</option>
+        <option value="header">顶部 Share 左侧</option>
+      </select></label>
       <label class="row" data-row="incremental"><span>增量：跳过未变化的对话</span><input type="checkbox" data-opt="incremental" checked></label>
       <label class="row" data-row="assets"><span>下载附件（图片始终下载）</span><input type="checkbox" data-opt="assets" checked></label>
       <label class="row" data-row="thoughts"><span>写入思考过程</span><input type="checkbox" data-opt="thoughts"></label>
@@ -338,6 +541,126 @@ export function mountPanel(cb: PanelCallbacks): void {
     <button class="cancel">取消</button>
   `
   root.append(fab, panel)
+
+  // FAB 锚定系统，双模式：
+  //   composer（默认）：贴输入框右侧垂直居中，挤不下退到输入框正上方（玻璃圆钮）；
+  //   header：贴顶栏 Share 按钮左侧（没有 Share 时贴 header 动作区），面板向下展开（幽灵钮）。
+  // 没有默认位置：找不到锚点就不出现；锚点短暂消失（切换会话会卸载重挂）位置冻结原地，
+  // 消失 4s+（设置页/改版）才整体隐藏——绝不回退到固定角落。
+  // 开销：ResizeObserver 只在锚点尺寸变化时触发；轮询每次一个 querySelector +
+  // getBoundingClientRect，样式仅在数值变化时写入。
+  let mode: 'composer' | 'header' = cb.settings.values.fabPos
+  host.dataset['pos'] = mode
+  const fabSize = () => (mode === 'header' ? 36 : 44)
+  const fabGap = () => (mode === 'header' ? 8 : 12)
+  let curRight = -1
+  let curBottom = -1
+  let curPanelTop = -1
+  const findAnchor = (): HTMLElement | null =>
+    (mode === 'header'
+      ? (document.querySelector('[data-testid="share-chat-button"]') ??
+        document.querySelector('#conversation-header-actions'))
+      : (document.querySelector('#prompt-textarea')?.closest('form') ??
+        document.querySelector('form[data-type="unified-composer"]'))) as HTMLElement | null
+  let anchor: HTMLElement | null = null
+  const syncPos = (): void => {
+    if (!anchor?.isConnected) return // 没有锚点：位置保持原样，藏与不藏由 rebindAnchor 决定
+    const r = anchor.getBoundingClientRect()
+    if (r.height <= 0) return
+    const size = fabSize()
+    let right: number
+    let bottom: number
+    if (mode === 'header') {
+      if (r.top < 0) return
+      right = Math.round(window.innerWidth - r.left + fabGap())
+      bottom = Math.round(window.innerHeight - r.bottom + (r.height - size) / 2)
+      const panelTop = Math.round(r.bottom + 10)
+      if (panelTop !== curPanelTop) {
+        curPanelTop = panelTop
+        host.style.setProperty('--panel-top', `${panelTop}px`)
+      }
+    } else {
+      if (r.bottom > window.innerHeight) return
+      const beside = Math.round(window.innerWidth - r.right - fabGap() - size)
+      if (beside >= 8) {
+        right = beside
+        bottom = Math.round(Math.max(8, window.innerHeight - r.bottom + (r.height - size) / 2))
+      } else {
+        right = 20
+        bottom = Math.round(Math.min(window.innerHeight - 60, window.innerHeight - r.top + fabGap()))
+      }
+    }
+    if (right !== curRight) {
+      curRight = right
+      host.style.setProperty('--fab-right', `${right}px`)
+    }
+    if (bottom !== curBottom) {
+      curBottom = bottom
+      host.style.setProperty('--fab-bottom', `${bottom}px`)
+    }
+  }
+  const hideFab = (): void => {
+    fab.classList.remove('in')
+    if (panel.classList.contains('open')) {
+      panel.classList.remove('open')
+      fab.classList.remove('open')
+      fab.setAttribute('aria-expanded', 'false')
+    }
+  }
+  const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(syncPos)
+  let anchorMissing = 0
+  const rebindAnchor = (): void => {
+    const c = findAnchor()
+    if (c !== anchor) {
+      ro?.disconnect()
+      anchor = c
+      if (c) ro?.observe(c)
+    }
+    if (anchor?.isConnected) {
+      anchorMissing = 0
+      syncPos()
+    } else if (++anchorMissing >= 2) {
+      hideFab() // 连续两轮（约 4s）没有锚点：整个入口隐藏
+    }
+  }
+  // 找到输入框、且位置连续两拍（250ms）稳定后才现身（.in)——SPA 水合期间 composer
+  // 可能先出现在错误位置（居中/侧栏未挂载），立刻现身会被用户看到「先落错位再闪跳」。
+  // 30s 还没等到就停掉快轮询、转交维护轮询：何时找到何时现身，等不到就一直不出现。
+  let bootDone = false
+  let bootTries = 0
+  let bootKey = ''
+  let bootStable = 0
+  const boot = (): void => {
+    rebindAnchor()
+    const key = `${curRight},${curBottom}`
+    bootStable = anchor && key === bootKey ? bootStable + 1 : anchor ? 1 : 0
+    bootKey = key
+    if (bootStable >= 2) {
+      bootDone = true
+      detectAccent(true) // 水合完成，页面主题色变量已就位
+      fab.classList.add('in')
+      return
+    }
+    if (++bootTries < 120) setTimeout(boot, 250)
+    else bootDone = true
+  }
+  boot()
+  window.addEventListener('resize', syncPos, { passive: true })
+  // 维护期：500ms 纯位置同步（锚点平移不触发 ResizeObserver），2s 一次全量重找 + accent 重读；
+  // 锚点回来（或迟到）时在这里重新现身
+  let tick = 0
+  setInterval(() => {
+    if (++tick % 4 === 0) {
+      rebindAnchor()
+      if (bootDone && anchor?.isConnected && curRight >= 0 && !fab.classList.contains('in')) {
+        detectAccent(true)
+        fab.classList.add('in')
+      }
+      detectAccent()
+    } else {
+      syncPos()
+    }
+  }, 500)
 
   const $ = <T extends HTMLElement>(sel: string) => panel.querySelector<T>(sel)!
   const statusEl = $<HTMLDivElement>('.status')
@@ -370,6 +693,16 @@ export function mountPanel(cb: PanelCallbacks): void {
     return Number.isFinite(v) && v >= 1 ? Math.min(v, 500) : 2
   }
   maxFileEl.addEventListener('change', () => cb.settings.onSettingsChange({ maxFileMB: readMaxFileMB() }))
+
+  // 按钮位置切换：立即换锚点重新定位（fab 已可见时平滑滑过去并切换样式）
+  const fabPosEl = panel.querySelector<HTMLSelectElement>('select[data-opt="fabPos"]')!
+  fabPosEl.value = mode
+  fabPosEl.addEventListener('change', () => {
+    mode = fabPosEl.value === 'header' ? 'header' : 'composer'
+    host.dataset['pos'] = mode
+    cb.settings.onSettingsChange({ fabPos: mode })
+    rebindAnchor()
+  })
 
   const linkStyleEl = panel.querySelector<HTMLSelectElement>('select[data-opt="linkStyle"]')!
   const headingModeEl = panel.querySelector<HTMLSelectElement>('select[data-opt="headingMode"]')!
@@ -549,7 +882,11 @@ export function mountPanel(cb: PanelCallbacks): void {
     advToggle.setAttribute('aria-expanded', String(open))
   })
 
-  fab.addEventListener('click', () => panel.classList.toggle('open'))
+  fab.addEventListener('click', () => {
+    const open = panel.classList.toggle('open')
+    fab.classList.toggle('open', open)
+    fab.setAttribute('aria-expanded', String(open))
+  })
   cancelEl.addEventListener('click', () => {
     cancelEl.disabled = true
     cb.onCancel()

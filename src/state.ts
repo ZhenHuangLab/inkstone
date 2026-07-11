@@ -72,6 +72,8 @@ export interface Settings {
   notesDir: string
   /** 附件子文件夹，相对笔记所在目录；空串 = 与笔记同层 */
   attachmentsDir: string
+  /** 导出按钮位置：悬浮在输入框旁（玻璃圆钮）或集成到顶部 Share 左侧（原生幽灵钮） */
+  fabPos: 'composer' | 'header'
 }
 
 const SETTINGS_KEY = 'inkstone:settings'
@@ -82,6 +84,7 @@ const DEFAULT_SETTINGS: Settings = {
   target: 'zip',
   notesDir: 'conversations',
   attachmentsDir: 'attachments',
+  fabPos: 'header',
 }
 
 export function loadSettings(): Settings {
@@ -103,6 +106,7 @@ export function loadSettings(): Settings {
           typeof s.attachmentsDir === 'string'
             ? sanitizeSubdir(s.attachmentsDir)
             : DEFAULT_SETTINGS.attachmentsDir,
+        fabPos: s.fabPos === 'composer' ? 'composer' : 'header',
       }
     }
   } catch {
