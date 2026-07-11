@@ -14,6 +14,9 @@ export default defineConfig({
         'run-at': 'document-idle',
         noframes: true,
         grant: ['GM_getValue', 'GM_setValue'],
+        // 指向 GitHub Releases 的固定「最新版」地址：发新 release 后 Tampermonkey 自动更新
+        downloadURL: 'https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js',
+        updateURL: 'https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js',
       },
       build: {
         fileName: 'inkstone.user.js',
