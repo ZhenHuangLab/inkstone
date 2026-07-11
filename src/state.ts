@@ -1,6 +1,8 @@
 // 增量水位线：conv_id → update_time。
 // 优先 GM 存储（跨页面持久，Tampermonkey @grant），CDP 注入等无 GM 环境回退 localStorage。
 
+import { sanitizeSubdir } from './convert/markdown'
+
 declare const GM_getValue: ((key: string, defaultValue?: string) => string | undefined) | undefined
 declare const GM_setValue: ((key: string, value: string) => void) | undefined
 
@@ -66,6 +68,10 @@ export interface Settings {
   headingMode: 'demote' | 'strip'
   /** 输出目标：下载 zip 或 File System Access 直写文件夹 */
   target: 'zip' | 'folder'
+  /** 笔记子文件夹（可 `a/b` 嵌套）；空串 = 直接写根目录 */
+  notesDir: string
+  /** 附件子文件夹，相对笔记所在目录；空串 = 与笔记同层 */
+  attachmentsDir: string
 }
 
 const SETTINGS_KEY = 'inkstone:settings'
@@ -74,6 +80,8 @@ const DEFAULT_SETTINGS: Settings = {
   linkStyle: 'wikilink',
   headingMode: 'demote',
   target: 'zip',
+  notesDir: 'conversations',
+  attachmentsDir: 'attachments',
 }
 
 export function loadSettings(): Settings {
@@ -89,6 +97,12 @@ export function loadSettings(): Settings {
         linkStyle: s.linkStyle === 'markdown' ? 'markdown' : 'wikilink',
         headingMode: s.headingMode === 'strip' ? 'strip' : 'demote',
         target: s.target === 'folder' ? 'folder' : 'zip',
+        // 空串是合法值（显式不套子文件夹），只在字段缺失/类型不对时回落默认
+        notesDir: typeof s.notesDir === 'string' ? sanitizeSubdir(s.notesDir) : DEFAULT_SETTINGS.notesDir,
+        attachmentsDir:
+          typeof s.attachmentsDir === 'string'
+            ? sanitizeSubdir(s.attachmentsDir)
+            : DEFAULT_SETTINGS.attachmentsDir,
       }
     }
   } catch {

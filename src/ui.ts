@@ -1,3 +1,5 @@
+import { sanitizeSubdir } from './convert/markdown'
+
 export type ExportFormat = 'markdown' | 'json'
 export type ExportScope = 'current' | 'all' | 'selection'
 
@@ -16,6 +18,10 @@ export interface ExportOptions {
   headingMode: 'demote' | 'strip'
   /** 输出目标：下载 zip / File System Access 直写文件夹 */
   target: 'zip' | 'folder'
+  /** 笔记子文件夹；空串 = 根目录 */
+  notesDir: string
+  /** 附件子文件夹，相对笔记所在目录；空串 = 与笔记同层 */
+  attachmentsDir: string
 }
 
 /** 面板需要持久化的设置值（与 state.ts 的 Settings 结构兼容）。 */
@@ -24,6 +30,8 @@ export interface PanelSettings {
   linkStyle: 'wikilink' | 'markdown'
   headingMode: 'demote' | 'strip'
   target: 'zip' | 'folder'
+  notesDir: string
+  attachmentsDir: string
 }
 
 export interface PickerItem {
@@ -183,6 +191,13 @@ const STYLE = `
     transition: border-color .15s var(--ease);
   }
   .adv input[type="number"]:focus { border-color: var(--accent); }
+  .adv input[type="text"] {
+    width: 118px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 12px; background: transparent; color: var(--fg); outline: none;
+    transition: border-color .15s var(--ease);
+  }
+  .adv input[type="text"]:focus { border-color: var(--accent); }
+  .adv input[type="text"]::placeholder { color: var(--muted); }
   .adv select {
     padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px;
     font-size: 12px; background: var(--bg); color: var(--fg); outline: none;
@@ -308,6 +323,8 @@ export function mountPanel(cb: PanelCallbacks): void {
         <option value="demote">整体降一级</option>
         <option value="strip">剥离为加粗行</option>
       </select></label>
+      <label class="row" data-row="notesDir"><span>笔记子文件夹</span><input type="text" data-opt="notesDir" placeholder="留空 = 根目录"></label>
+      <label class="row" data-row="attachmentsDir"><span>附件子文件夹（相对笔记）</span><input type="text" data-opt="attachmentsDir" placeholder="留空 = 与笔记同层"></label>
       <button class="reset">重置增量记录（下次全量导出）</button>
       <button class="reset" data-act="forget-folder" hidden>重新选择写入文件夹</button>
     </div>
@@ -362,6 +379,20 @@ export function mountPanel(cb: PanelCallbacks): void {
     cb.settings.onSettingsChange({ headingMode: headingModeEl.value === 'strip' ? 'strip' : 'demote' }),
   )
 
+  // 子文件夹输入：净化后回写输入框，用户所见即实际生效值
+  const notesDirEl = panel.querySelector<HTMLInputElement>('input[data-opt="notesDir"]')!
+  const attachmentsDirEl = panel.querySelector<HTMLInputElement>('input[data-opt="attachmentsDir"]')!
+  notesDirEl.value = cb.settings.values.notesDir
+  attachmentsDirEl.value = cb.settings.values.attachmentsDir
+  notesDirEl.addEventListener('change', () => {
+    notesDirEl.value = sanitizeSubdir(notesDirEl.value)
+    cb.settings.onSettingsChange({ notesDir: notesDirEl.value })
+  })
+  attachmentsDirEl.addEventListener('change', () => {
+    attachmentsDirEl.value = sanitizeSubdir(attachmentsDirEl.value)
+    cb.settings.onSettingsChange({ attachmentsDir: attachmentsDirEl.value })
+  })
+
   // 不支持 File System Access（Firefox/Safari）就锁死 zip
   const folderBtn = panel.querySelector<HTMLButtonElement>('[data-seg="target"] button[data-v="folder"]')!
   if (!cb.settings.supportsFolder) {
@@ -385,6 +416,8 @@ export function mountPanel(cb: PanelCallbacks): void {
     linkStyle: linkStyleEl.value === 'markdown' ? 'markdown' : 'wikilink',
     headingMode: headingModeEl.value === 'strip' ? 'strip' : 'demote',
     target,
+    notesDir: sanitizeSubdir(notesDirEl.value),
+    attachmentsDir: sanitizeSubdir(attachmentsDirEl.value),
   })
 
   const rows = () => [...pickerList.querySelectorAll<HTMLLabelElement>('.row')]
@@ -401,7 +434,8 @@ export function mountPanel(cb: PanelCallbacks): void {
     pickerEl.classList.toggle('open', scope === 'selection')
     pickerEmpty.classList.toggle('visible', listLoaded && visibleRows().length === 0)
     advEl.querySelector('[data-row="incremental"]')!.classList.toggle('dis', scope !== 'all')
-    for (const name of ['assets', 'thoughts', 'maxFileMB', 'linkStyle', 'headingMode']) {
+    // JSON 导出走固定的 raw/ 目录，Markdown 专属选项一并禁用
+    for (const name of ['assets', 'thoughts', 'maxFileMB', 'linkStyle', 'headingMode', 'notesDir', 'attachmentsDir']) {
       advEl.querySelector(`[data-row="${name}"]`)!.classList.toggle('dis', format === 'json')
     }
     forgetFolderEl.hidden = target !== 'folder'

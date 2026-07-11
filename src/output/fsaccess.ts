@@ -89,7 +89,7 @@ async function ensurePermission(handle: FileSystemDirectoryHandle): Promise<bool
     : false
 }
 
-/** 写入 root 下的相对路径（`conversations/x.md`），中间目录自动创建。 */
+/** 写入 root 下的相对路径（如 `<笔记目录>/x.md`），中间目录自动创建。 */
 export async function writeVaultFile(
   root: FileSystemDirectoryHandle,
   relPath: string,

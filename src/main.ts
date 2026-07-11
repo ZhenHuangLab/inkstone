@@ -212,6 +212,11 @@ function createProcessor(
   // fileId → 正文替换文本；同一附件跨对话只下载一次
   const assetCache = new Map<string, string>()
   const maxFileBytes = opts.maxFileMB * 1024 * 1024
+  const notesPrefix = opts.notesDir ? `${opts.notesDir}/` : ''
+  const attachPrefix = opts.attachmentsDir ? `${opts.attachmentsDir}/` : ''
+  // 失败/超限只写进正文占位文字，完成文案里要显式报数，否则像无事发生
+  let assetsFailed = 0
+  let assetsSkipped = 0
 
   async function resolveAsset(a: AssetRef): Promise<string> {
     const cached = assetCache.get(a.fileId)
@@ -220,28 +225,41 @@ function createProcessor(
     // 元数据 size 不可靠（library 文件报 0），仅作快速跳过；真正的护栏在 fetchBinary
     const cap = a.kind === 'file' ? maxFileBytes : MAX_IMAGE_BYTES
     if ((a.sizeBytes ?? 0) > cap) {
+      assetsSkipped++
       replacement = skippedNote(a, a.sizeBytes!, cap)
     } else {
       try {
         const target = await resolveFileDownload(token, a.fileId, cancel)
         const { bytes, contentType } = await fetchBinary(target.url, cancel, cap)
         const name = assetFileName(a, target.filename, contentType)
-        const path = `attachments/${a.fileId.slice(-8)}-${name}`
-        await sink.put(path, bytes, { precompressed: true })
-        replacement = assetLink(opts.linkStyle, path, {
+        // 链接相对 .md 所在目录，落盘再套上笔记目录前缀
+        const linkPath = `${attachPrefix}${a.fileId.slice(-8)}-${name}`
+        await sink.put(`${notesPrefix}${linkPath}`, bytes, { precompressed: true })
+        replacement = assetLink(opts.linkStyle, linkPath, {
           embed: a.kind === 'image',
           label: a.kind === 'image' ? undefined : (a.name ?? name),
         })
       } catch (e) {
         if (e instanceof CancelledError) throw e
-        replacement =
-          e instanceof SizeLimitError
-            ? skippedNote(a, e.actualBytes, cap)
-            : `*(附件下载失败：${a.name ?? a.fileId} — ${String(e)})*`
+        if (e instanceof SizeLimitError) {
+          assetsSkipped++
+          replacement = skippedNote(a, e.actualBytes, cap)
+        } else {
+          assetsFailed++
+          replacement = `*(附件下载失败：${a.name ?? a.fileId} — ${String(e)})*`
+        }
       }
     }
     assetCache.set(a.fileId, replacement)
     return replacement
+  }
+
+  /** 完成文案的附件异常后缀（正常时空串）；具体条目见各 .md 内的占位说明。 */
+  function assetSummary(): string {
+    return (
+      (assetsFailed > 0 ? `，附件失败 ${assetsFailed} 个` : '') +
+      (assetsSkipped > 0 ? `，附件超限跳过 ${assetsSkipped} 个` : '')
+    )
   }
 
   function skippedNote(a: AssetRef, actual: number, cap: number): string {
@@ -273,12 +291,12 @@ function createProcessor(
       }
       md = md.split(assetToken(a.fileId)).join(await resolveAsset(a))
     }
-    const path = `conversations/${filenameFor(title, item.id)}`
+    const path = `${notesPrefix}${filenameFor(title, item.id)}`
     await sink.put(path, strToU8(md))
     return { path }
   }
 
-  return { processConversation }
+  return { processConversation, assetSummary }
 }
 
 /** 只导出当前打开的对话：zip 目标下无附件裸 .md、有附件小 zip；folder 目标直写 vault。 */
@@ -317,14 +335,14 @@ async function exportSingle(
     if (zs != null) {
       const hasAttachments = Object.keys(zs.entries).some((p) => p !== path)
       if (hasAttachments) {
-        panel.setStatus(await zs.close(panel, baseName.replace(/\.md$/, '.zip')))
+        panel.setStatus((await zs.close(panel, baseName.replace(/\.md$/, '.zip'))) + proc.assetSummary())
       } else {
         const entry = zs.entries[path]!
         downloadBlob(baseName, entry instanceof Uint8Array ? entry : entry[0], 'text/markdown')
-        panel.setStatus(`完成：${baseName}`)
+        panel.setStatus(`完成：${baseName}${proc.assetSummary()}`)
       }
     } else {
-      panel.setStatus(`完成：${await sink!.close(panel, '')}`)
+      panel.setStatus(`完成：${await sink!.close(panel, '')}${proc.assetSummary()}`)
     }
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
@@ -474,7 +492,8 @@ async function exportItems(
     `${safetyAborted ? '保护性中止（失败过多，防止触发服务端限制）。' : '完成：'}` +
       `${list.length - failures.length} 个对话，${doneDesc}` +
       (skipped > 0 ? `（另跳过未变化 ${skipped} 条）` : '') +
-      (failures.length ? `，${failures.length} 个失败（见 _failures.json）` : ''),
+      (failures.length ? `，${failures.length} 个失败（见 _failures.json）` : '') +
+      proc.assetSummary(),
   )
 }
 

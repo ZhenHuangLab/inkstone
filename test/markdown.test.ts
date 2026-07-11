@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { assetLink, conversationToMarkdown, filenameFor } from '../src/convert/markdown'
+import { assetLink, conversationToMarkdown, filenameFor, sanitizeSubdir } from '../src/convert/markdown'
 import type { ConversationDetail } from '../src/types'
 import fixtureJson from './fixtures/basic.json'
 
@@ -208,6 +208,34 @@ describe('filenameFor', () => {
   test('超长标题截断到 80 字符', () => {
     const name = filenameFor('长'.repeat(200), 'abc12345-rest')
     expect(name.length).toBeLessThanOrEqual(80 + '-abc12345.md'.length)
+  })
+})
+
+describe('sanitizeSubdir', () => {
+  test('普通名与嵌套路径原样保留', () => {
+    expect(sanitizeSubdir('conversations')).toBe('conversations')
+    expect(sanitizeSubdir('ChatGPT/对话')).toBe('ChatGPT/对话')
+  })
+
+  test('非法字符逐段归一为 -', () => {
+    expect(sanitizeSubdir('a:b*c/d e')).toBe('a-b-c/d-e')
+  })
+
+  test('目录逃逸段被丢弃', () => {
+    expect(sanitizeSubdir('../etc')).toBe('etc')
+    expect(sanitizeSubdir('a/../b')).toBe('a/b')
+    expect(sanitizeSubdir('./a')).toBe('a')
+  })
+
+  test('首尾与连续斜杠折叠', () => {
+    expect(sanitizeSubdir('/a//b/')).toBe('a/b')
+  })
+
+  test('空串与纯垃圾输入归为空（不套子文件夹）', () => {
+    expect(sanitizeSubdir('')).toBe('')
+    expect(sanitizeSubdir('  ')).toBe('')
+    expect(sanitizeSubdir('..')).toBe('')
+    expect(sanitizeSubdir('//')).toBe('')
   })
 })
 

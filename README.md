@@ -11,7 +11,8 @@
   - `# User` / `# ChatGPT` 作为最高级标题分隔轮次，消息内的 H1–H6 整体降一级
   - `\( \)` / `\[ \]` → `$` / `$$` 公式定界符转换（代码块感知），货币 `$` 转义
   - **引用还原**：联网搜索引用 → 行内 `[来源](url)` 链接 + 文末 `# Sources` 汇总；文件引用 → 文件名说明；还原不了的标记剥离，绝不留乱码
-  - **附件下载**：对话里的图片全部下载进 `attachments/`（Obsidian `![[wikilink]]` 内联）；用户上传的文件 ≤2MB 下载并链接，超限的留说明占位
+  - **附件下载**：对话里的图片全部下载进笔记同目录下的附件子文件夹（默认 `conversations/attachments/`，Obsidian `![[wikilink]]` 内联）；用户上传的文件 ≤2MB 下载并链接，超限的留说明占位
+  - **目录可定制**：笔记子文件夹（默认 `conversations`，可 `a/b` 嵌套、可留空写根目录）与附件子文件夹（默认 `attachments`，相对笔记所在目录、可留空与笔记同层）均可在设置里改；附件链接是相对 .md 的严格相对路径，GitHub/VS Code 预览同样可用
   - 代码解释器代码 + 运行输出、思维链折叠 callout
   - 未知内容类型原样保留进折叠 callout，绝不静默丢内容
   - frontmatter：title / chat_id / url / created / updated / model / tags

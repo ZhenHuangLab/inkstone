@@ -41,7 +41,7 @@
    - `thoughts`（推理模型思维链）→ 折叠 callout，默认带、可关
    - Canvas textdoc → MVP 整块嵌入，后续做 patch 重放还原终稿
    - **未知类型 → 原始 JSON 塞进折叠 callout，永不静默丢内容**
-6. **附件管道**：`file-service://` 与 `sediment://` 指针 → files 接口下载 → `attachments/` 按内容哈希去重 → 链接改写（wikilink `![[...]]` / 标准相对链接，可配）；下载失败留占位说明。
+6. **附件管道**：`file-service://` 与 `sediment://` 指针 → files 接口下载 → 笔记同目录下的附件子文件夹（默认 `conversations/attachments/`）→ 链接改写（wikilink `![[...]]` / 标准相对链接，可配；链接相对 .md 严格成立）；下载失败留占位说明并在完成文案里报数。笔记/附件子文件夹名均可设置（可 `a/b` 嵌套、可留空；`sanitizeSubdir` 逐段净化防逃逸），油猴设置面板与 CLI `--notes-dir`/`--attachments-dir` 同规则。⚠️ 直写 vault 时注意 macOS 大小写不敏感：目录名撞上 vault 已有目录（如 `Attachments`）会直接写进去——2026-07-10 排查的"附件丢失"即此叠加 fast-note-sync 云预览删本地所致，非代码 bug。
 7. **Frontmatter**：title、chat_id、url（`chatgpt.com/c/<id>`）、created、updated、model（实际生成消息的 model_slug，最后一条为准；多模型另列 models）、tags —— 配 Dataview 即全库索引。
 8. **文件名**：`标题-短id.md` 防重名（无空格/波浪线，非法字符与空白归一为 `-`），id 保证增量覆盖稳定。
 
@@ -89,6 +89,7 @@ inkstone/
 - **P2 保真度** ✅（2026-07-08）：引用还原（content_references → 行内链接 + Sources）、附件管道（图片全下 / 文件 ≤2MB）、thoughts/代码解释器类型、全局限速 + 失败重试（Canvas 精细还原顺延到 P3，MVP 为折叠嵌入）
 - **P2.5** ✅（2026-07-08）：增量同步（提前自 P3）、单对话导出、附件上限设置、Branch 对话 frontmatter 回链父对话
 - **P3 体验** ✅（2026-07-10）：File System Access 直写 vault（目录句柄存 IndexedDB 跨会话复用，Firefox 锁死 zip）、链接风格（wikilink / 标准 md）与消息内标题模式（降级 / 剥离为加粗）设置、Canvas patch 重放（create/update 重放还原终稿，重放失败回退原始 JSON 嵌入；账号历史里无真实 Canvas 数据，仅合成 fixture 验证，待真实数据回归）
+- **P3.5 目录定制** ✅（2026-07-11）：笔记/附件子文件夹可设置（面板 + CLI `--notes-dir`/`--attachments-dir`），附件目录改挂笔记目录下、链接改为相对 .md 的严格相对路径；完成文案报附件失败/超限数（油猴直写端待真实页面回归）
 - **P4 脱离油猴（用户明确期望）**：转换层（convert/）零浏览器依赖、api.ts 只依赖 fetch，天然可复用到：
   1. **MV3 浏览器扩展**——同一套 src，加 manifest + content script 打包目标（vite 多入口）；不再依赖 Tampermonkey，可上架商店（用户拍板：等功能完善后再做/上架）
   2. **官方导出 zip 的离线 CLI** ✅（2026-07-10，`bun run offline <zip|目录> [-o 输出]`）——完全不碰 backend-api，零限流风险；432 对话 + 248 附件 ~8s 转完；支持 `--link-style/--heading-mode/--no-thoughts/--no-assets`

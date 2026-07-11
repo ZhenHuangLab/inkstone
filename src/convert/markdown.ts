@@ -153,6 +153,18 @@ export function sanitizeName(name: string): string {
     .replace(/^[-.]+|-+$/g, '')
 }
 
+/**
+ * 子文件夹设置净化：按 `/` 分段逐段过 sanitizeName（`.`/`..` 被清成空段丢弃，防目录逃逸），
+ * 允许 `a/b` 嵌套；返回 `''` 表示不套子文件夹。
+ */
+export function sanitizeSubdir(input: string): string {
+  return input
+    .split('/')
+    .map((seg) => sanitizeName(seg))
+    .filter((seg) => seg !== '')
+    .join('/')
+}
+
 function renderTurn(turn: Turn, ctx: RenderCtx): string | null {
   const rendered = turn.messages
     .map((m) => renderMessage(m, ctx))

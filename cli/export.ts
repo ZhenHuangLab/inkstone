@@ -3,8 +3,10 @@
 //
 //   bun cli/export.ts <官方导出.zip 或解压目录> [-o 输出目录]
 //     [--no-thoughts] [--no-assets] [--link-style wikilink|markdown] [--heading-mode demote|strip]
+//     [--notes-dir <名字>] [--attachments-dir <名字>]
 //
-// 输出目录结构与油猴导出的 zip 一致：conversations/*.md + attachments/*。
+// 输出目录结构与油猴导出一致：<笔记目录>/*.md + <笔记目录>/<附件目录>/*
+// （默认 conversations/ 与 conversations/attachments/；目录名可自定义、可留空、可 a/b 嵌套）。
 //
 // 官方 zip 与 backend-api 的已知差异（2026-07 实测）：
 // - 只保留 user/assistant 可见消息，tool/system 全剥离 → Canvas、代码解释器载荷不存在
@@ -22,6 +24,7 @@ import {
   conversationToMarkdown,
   filenameFor,
   sanitizeName,
+  sanitizeSubdir,
   type AssetRef,
   type ConvertOptions,
   type LinkStyle,
@@ -37,6 +40,10 @@ interface CliArgs {
   assets: boolean
   linkStyle: LinkStyle
   headingMode: NonNullable<ConvertOptions['headingMode']>
+  /** 笔记子文件夹；空串 = 输出根目录 */
+  notesDir: string
+  /** 附件子文件夹，相对笔记所在目录；空串 = 与笔记同层 */
+  attachmentsDir: string
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -46,6 +53,8 @@ function parseArgs(argv: string[]): CliArgs {
   let assets = true
   let linkStyle: LinkStyle = 'wikilink'
   let headingMode: CliArgs['headingMode'] = 'demote'
+  let notesDir = 'conversations'
+  let attachmentsDir = 'attachments'
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!
@@ -60,6 +69,10 @@ function parseArgs(argv: string[]): CliArgs {
       const v = argv[++i]
       if (v !== 'demote' && v !== 'strip') die(`--heading-mode 只能是 demote 或 strip，收到：${v}`)
       headingMode = v
+    } else if (a === '--notes-dir') {
+      notesDir = sanitizeSubdir(argv[++i] ?? '')
+    } else if (a === '--attachments-dir') {
+      attachmentsDir = sanitizeSubdir(argv[++i] ?? '')
     } else if (a === '-h' || a === '--help') {
       usage()
       process.exit(0)
@@ -72,14 +85,17 @@ function parseArgs(argv: string[]): CliArgs {
     process.exit(1)
   }
   if (out === '') out = `${input.replace(/\.zip$/i, '').replace(/\/+$/, '')}-vault`
-  return { input, out, thoughts, assets, linkStyle, headingMode }
+  return { input, out, thoughts, assets, linkStyle, headingMode, notesDir, attachmentsDir }
 }
 
 function usage(): void {
   console.log(
     'Inkstone 离线导出：ChatGPT 官方导出 zip → Obsidian 友好 Markdown\n\n' +
       '用法：bun cli/export.ts <导出.zip 或解压目录> [-o 输出目录]\n' +
-      '      [--no-thoughts] [--no-assets] [--link-style wikilink|markdown] [--heading-mode demote|strip]',
+      '      [--no-thoughts] [--no-assets] [--link-style wikilink|markdown] [--heading-mode demote|strip]\n' +
+      '      [--notes-dir <名字>] [--attachments-dir <名字>]\n\n' +
+      '--notes-dir        笔记子文件夹（默认 conversations；留空 "" = 输出根目录，可 a/b 嵌套）\n' +
+      '--attachments-dir  附件子文件夹，相对笔记所在目录（默认 attachments；留空 "" = 与笔记同层）',
   )
 }
 
@@ -257,7 +273,7 @@ for (const [id, conv] of convById) {
     thoughts: args.thoughts,
     headingMode: args.headingMode,
   })
-  pending.push({ path: join('conversations', filenameFor(title, id)), markdown, assets, title })
+  pending.push({ path: join(args.notesDir, filenameFor(title, id)), markdown, assets, title })
   for (const a of assets) {
     if (!assetRefs.has(a.fileId)) assetRefs.set(a.fileId, a)
     ;(assetUsedBy.get(a.fileId) ?? assetUsedBy.set(a.fileId, []).get(a.fileId)!).push(title)
@@ -282,8 +298,8 @@ if (args.assets) {
   }
 }
 
-mkdirSync(join(args.out, 'conversations'), { recursive: true })
-if (entryByAsset.size > 0) mkdirSync(join(args.out, 'attachments'), { recursive: true })
+mkdirSync(join(args.out, args.notesDir), { recursive: true })
+if (entryByAsset.size > 0) mkdirSync(join(args.out, args.notesDir, args.attachmentsDir), { recursive: true })
 
 // fileId → 正文替换文本
 const replacements = new Map<string, string>()
@@ -303,11 +319,12 @@ if (args.assets) {
       const entryBase = basename(entry)
       const hint = assetNameByDat[entryBase] ?? (entryBase.endsWith('.dat') ? null : entryBase)
       const name = attachmentFileName(a, hint, bytes)
-      const relPath = `attachments/${fileId.slice(-8)}-${name}`
-      writeFileSync(join(args.out, relPath), bytes)
+      // 链接相对 .md 所在目录，落盘再套上笔记目录前缀（与油猴端同规则）
+      const linkPath = `${args.attachmentsDir ? `${args.attachmentsDir}/` : ''}${fileId.slice(-8)}-${name}`
+      writeFileSync(join(args.out, args.notesDir, linkPath), bytes)
       replacements.set(
         fileId,
-        assetLink(args.linkStyle, relPath, { embed: a.kind === 'image', label: a.name ?? name }),
+        assetLink(args.linkStyle, linkPath, { embed: a.kind === 'image', label: a.name ?? name }),
       )
     }
     if (ids.length > BATCH) console.log(`附件 ${Math.min(i + BATCH, ids.length)}/${ids.length} …`)
