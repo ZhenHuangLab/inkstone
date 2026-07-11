@@ -50,4 +50,8 @@ bun run build
 
 ## 路线图
 
-P3 增量同步 / File System Access 直写 vault / 设置面板（附件大小上限、链接风格等）；Canvas 精细还原。详见 PLAN.md。
+MV3 浏览器扩展（脱离 Tampermonkey、上架商店）、Claude / Gemini 适配。已完成：增量同步、直写 vault、设置面板、Canvas patch 重放、官方导出 zip 离线 CLI（`bun run offline`）。详见 PLAN.md。
+
+## 许可证
+
+[GPL-3.0](./LICENSE)
