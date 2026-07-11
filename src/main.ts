@@ -275,6 +275,7 @@ function createProcessor(
     }
     const { markdown, title, assets } = conversationToMarkdown(conv, item.id, {
       thoughts: opts.thoughts,
+      toolTraces: opts.toolTraces,
       headingMode: opts.headingMode,
     })
     let md = markdown

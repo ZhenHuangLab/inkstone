@@ -29,10 +29,12 @@ export interface ConvertResult {
 }
 
 export interface ConvertOptions {
-  /** 是否把思维链（thoughts）写入导出，默认写入（折叠 callout） */
+  /** 是否把思维链（thoughts）写入导出，默认不写入（打开后折叠 callout） */
   thoughts?: boolean
   /** 消息内标题处理：demote 整体降一级（默认）/ strip 全部剥离为加粗行 */
   headingMode?: HeadingMode
+  /** 是否写入工具运行痕迹（发给工具的代码/搜索请求与运行输出），默认不写入 */
+  toolTraces?: boolean
 }
 
 export type LinkStyle = 'wikilink' | 'markdown'
@@ -63,6 +65,7 @@ interface RenderCtx {
   sources: SourceLink[]
   assets: AssetRef[]
   thoughts: boolean
+  toolTraces: boolean
   headingMode: HeadingMode
   /** msgId → 重放成功的 Canvas 操作；重放失败的 canmore 消息走原始 JSON 兜底 */
   canvas: Map<string, CanvasOp>
@@ -88,7 +91,8 @@ export function conversationToMarkdown(
   const ctx: RenderCtx = {
     sources: [],
     assets: [],
-    thoughts: copts.thoughts !== false,
+    thoughts: copts.thoughts === true,
+    toolTraces: copts.toolTraces === true,
     headingMode: copts.headingMode ?? 'demote',
     canvas: replayCanvas(messages),
   }
@@ -199,8 +203,10 @@ function renderMessage(msg: Message, ctx: RenderCtx): string | null {
           )
         }
       } else if (msg.author.role === 'assistant' && recipient !== 'all') {
-        // 联网等其他工具调用载荷（多为 JSON）：整块折叠嵌入，不丢内容
-        blocks.push(callout('example', `工具调用 → \`${recipient}\``, fence(stripResidualMarkers(raw)), true))
+        // 联网等其他工具调用载荷（多为 JSON）：默认不写入，toolTraces 打开时整块折叠嵌入
+        if (ctx.toolTraces) {
+          blocks.push(callout('example', `工具调用 → \`${recipient}\``, fence(stripResidualMarkers(raw)), true))
+        }
       } else {
         blocks.push(renderProse(raw, refs, ctx))
       }
@@ -219,10 +225,23 @@ function renderMessage(msg: Message, ctx: RenderCtx): string | null {
       }
       break
     case 'code':
-      blocks.push(fence(c.text ?? '', codeLanguage(c, recipient)))
+      // content_type=code 都是工具调用载荷（代码解释器 python、联网检索 search_query/open/click 等），
+      // 随 toolTraces 开关；折叠 callout 包裹，与其他工具痕迹一致
+      if (ctx.toolTraces) {
+        blocks.push(
+          callout(
+            'example',
+            `工具调用 → \`${recipient}\``,
+            fence(c.text ?? '', codeLanguage(c, recipient)),
+            true,
+          ),
+        )
+      }
       break
     case 'execution_output':
-      blocks.push(callout('note', '运行输出', fence(stripResidualMarkers(c.text ?? '')), true))
+      if (ctx.toolTraces) {
+        blocks.push(callout('note', '运行输出', fence(stripResidualMarkers(c.text ?? '')), true))
+      }
       break
     case 'thoughts': {
       if (!ctx.thoughts) break

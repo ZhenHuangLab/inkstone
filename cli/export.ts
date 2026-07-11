@@ -37,6 +37,7 @@ interface CliArgs {
   input: string
   out: string
   thoughts: boolean
+  toolTraces: boolean
   assets: boolean
   linkStyle: LinkStyle
   headingMode: NonNullable<ConvertOptions['headingMode']>
@@ -49,7 +50,8 @@ interface CliArgs {
 function parseArgs(argv: string[]): CliArgs {
   let input = ''
   let out = ''
-  let thoughts = true
+  let thoughts = false
+  let toolTraces = false
   let assets = true
   let linkStyle: LinkStyle = 'wikilink'
   let headingMode: CliArgs['headingMode'] = 'demote'
@@ -59,7 +61,8 @@ function parseArgs(argv: string[]): CliArgs {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!
     if (a === '-o' || a === '--out') out = argv[++i] ?? ''
-    else if (a === '--no-thoughts') thoughts = false
+    else if (a === '--thoughts') thoughts = true
+    else if (a === '--tool-traces') toolTraces = true
     else if (a === '--no-assets') assets = false
     else if (a === '--link-style') {
       const v = argv[++i]
@@ -85,15 +88,17 @@ function parseArgs(argv: string[]): CliArgs {
     process.exit(1)
   }
   if (out === '') out = `${input.replace(/\.zip$/i, '').replace(/\/+$/, '')}-vault`
-  return { input, out, thoughts, assets, linkStyle, headingMode, notesDir, attachmentsDir }
+  return { input, out, thoughts, toolTraces, assets, linkStyle, headingMode, notesDir, attachmentsDir }
 }
 
 function usage(): void {
   console.log(
     'Inkstone 离线导出：ChatGPT 官方导出 zip → Obsidian 友好 Markdown\n\n' +
       '用法：bun cli/export.ts <导出.zip 或解压目录> [-o 输出目录]\n' +
-      '      [--no-thoughts] [--no-assets] [--link-style wikilink|markdown] [--heading-mode demote|strip]\n' +
+      '      [--thoughts] [--tool-traces] [--no-assets] [--link-style wikilink|markdown] [--heading-mode demote|strip]\n' +
       '      [--notes-dir <名字>] [--attachments-dir <名字>]\n\n' +
+      '--thoughts         写入思考过程（思维链折叠 callout），默认不写入\n' +
+      '--tool-traces      写入工具运行痕迹（代码执行/搜索请求/运行输出，折叠 callout），默认不写入\n' +
       '--notes-dir        笔记子文件夹（默认 conversations；留空 "" = 输出根目录，可 a/b 嵌套）\n' +
       '--attachments-dir  附件子文件夹，相对笔记所在目录（默认 attachments；留空 "" = 与笔记同层）',
   )
@@ -271,6 +276,7 @@ let done = 0
 for (const [id, conv] of convById) {
   const { markdown, title, assets } = conversationToMarkdown(conv, id, {
     thoughts: args.thoughts,
+    toolTraces: args.toolTraces,
     headingMode: args.headingMode,
   })
   pending.push({ path: join(args.notesDir, filenameFor(title, id)), markdown, assets, title })

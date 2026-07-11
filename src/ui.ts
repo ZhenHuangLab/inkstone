@@ -10,6 +10,8 @@ export interface ExportOptions {
   assets: boolean
   /** 思维链（thoughts）是否写入导出 */
   thoughts: boolean
+  /** 工具运行痕迹（发给工具的代码/搜索请求与运行输出）是否写入导出，默认不写入 */
+  toolTraces: boolean
   /** 文件类附件下载上限（MB）；图片不受限 */
   maxFileMB: number
   /** 附件链接风格 */
@@ -313,7 +315,8 @@ export function mountPanel(cb: PanelCallbacks): void {
     <div class="adv">
       <label class="row" data-row="incremental"><span>增量：跳过未变化的对话</span><input type="checkbox" data-opt="incremental" checked></label>
       <label class="row" data-row="assets"><span>下载附件（图片始终下载）</span><input type="checkbox" data-opt="assets" checked></label>
-      <label class="row" data-row="thoughts"><span>写入思考过程</span><input type="checkbox" data-opt="thoughts" checked></label>
+      <label class="row" data-row="thoughts"><span>写入思考过程</span><input type="checkbox" data-opt="thoughts"></label>
+      <label class="row" data-row="toolTraces"><span>写入工具过程（代码执行/搜索）</span><input type="checkbox" data-opt="toolTraces"></label>
       <label class="row" data-row="maxFileMB"><span>文件附件上限（MB）</span><input type="number" data-opt="maxFileMB" min="1" max="500" step="1" value="2"></label>
       <label class="row" data-row="linkStyle"><span>附件链接风格</span><select data-opt="linkStyle">
         <option value="wikilink">Wikilink</option>
@@ -412,6 +415,7 @@ export function mountPanel(cb: PanelCallbacks): void {
     incremental: optOf('incremental'),
     assets: optOf('assets'),
     thoughts: optOf('thoughts'),
+    toolTraces: optOf('toolTraces'),
     maxFileMB: readMaxFileMB(),
     linkStyle: linkStyleEl.value === 'markdown' ? 'markdown' : 'wikilink',
     headingMode: headingModeEl.value === 'strip' ? 'strip' : 'demote',
@@ -435,7 +439,7 @@ export function mountPanel(cb: PanelCallbacks): void {
     pickerEmpty.classList.toggle('visible', listLoaded && visibleRows().length === 0)
     advEl.querySelector('[data-row="incremental"]')!.classList.toggle('dis', scope !== 'all')
     // JSON 导出走固定的 raw/ 目录，Markdown 专属选项一并禁用
-    for (const name of ['assets', 'thoughts', 'maxFileMB', 'linkStyle', 'headingMode', 'notesDir', 'attachmentsDir']) {
+    for (const name of ['assets', 'thoughts', 'toolTraces', 'maxFileMB', 'linkStyle', 'headingMode', 'notesDir', 'attachmentsDir']) {
       advEl.querySelector(`[data-row="${name}"]`)!.classList.toggle('dis', format === 'json')
     }
     forgetFolderEl.hidden = target !== 'folder'

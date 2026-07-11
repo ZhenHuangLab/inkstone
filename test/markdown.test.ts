@@ -53,15 +53,58 @@ describe('conversationToMarkdown', () => {
     expect(markdown).toContain('`\\(x\\)`')
   })
 
-  test('代码解释器：代码围栏 + 运行输出折叠 callout', () => {
-    expect(markdown).toContain('```python\nm = 2')
-    expect(markdown).toContain('> [!note]- 运行输出')
-    expect(markdown).toContain('1.7975103574736352e+17')
+  test('工具运行痕迹默认不写入（代码解释器代码 / 运行输出）', () => {
+    expect(markdown).not.toContain('m = 2')
+    expect(markdown).not.toContain('工具调用')
+    expect(markdown).not.toContain('> [!note]- 运行输出')
+    expect(markdown).not.toContain('1.7975103574736352e+17')
   })
 
-  test('思维链折叠 callout', () => {
-    expect(markdown).toContain('> [!quote]- 思考过程')
-    expect(markdown).toContain('> **分析问题**')
+  test('toolTraces 打开：代码/运行输出各自折叠 callout 包裹', () => {
+    const { markdown: md } = conversationToMarkdown(fixture, '', { toolTraces: true })
+    expect(md).toContain('> [!example]- 工具调用 → `python`')
+    expect(md).toContain('> ```python')
+    expect(md).toContain('> m = 2')
+    expect(md).toContain('> [!note]- 运行输出')
+    expect(md).toContain('1.7975103574736352e+17')
+  })
+
+  test('发给工具的 text 载荷（联网搜索等）随 toolTraces 开关', () => {
+    const conv = {
+      title: '搜索测试',
+      conversation_id: 'feedface-0000-0000-0000-000000000000',
+      current_node: 's1',
+      mapping: {
+        s1: {
+          id: 's1',
+          parent: null,
+          children: [],
+          message: {
+            id: 's1',
+            author: { role: 'assistant' },
+            recipient: 'web.run',
+            content: { content_type: 'text', parts: ['{"search_query":[{"q":"Synology DSM"}]}'] },
+          },
+        },
+      },
+    } as unknown as ConversationDetail
+    const { markdown: off } = conversationToMarkdown(conv)
+    expect(off).not.toContain('search_query')
+    expect(off).not.toContain('工具调用')
+    const { markdown: on } = conversationToMarkdown(conv, '', { toolTraces: true })
+    expect(on).toContain('工具调用 → `web.run`')
+    expect(on).toContain('search_query')
+  })
+
+  test('思考过程默认不写入', () => {
+    expect(markdown).not.toContain('思考过程')
+    expect(markdown).not.toContain('分析问题')
+  })
+
+  test('thoughts 打开：思维链折叠 callout', () => {
+    const { markdown: md } = conversationToMarkdown(fixture, '', { thoughts: true })
+    expect(md).toContain('> [!quote]- 思考过程')
+    expect(md).toContain('> **分析问题**')
   })
 
   test('未知内容类型进折叠 callout，不静默丢弃', () => {
@@ -311,13 +354,13 @@ describe('model 检测', () => {
 })
 
 describe('思考过程开关', () => {
-  test('默认写入，thoughts: false 时剔除', () => {
-    expect(markdown).toContain('> [!quote]- 思考过程')
-    const off = conversationToMarkdown(fixture, '', { thoughts: false })
-    expect(off.markdown).not.toContain('思考过程')
-    expect(off.markdown).not.toContain('分析问题')
+  test('默认不写入，thoughts: true 时含思考过程', () => {
+    expect(markdown).not.toContain('思考过程')
+    const on = conversationToMarkdown(fixture, '', { thoughts: true })
+    expect(on.markdown).toContain('> [!quote]- 思考过程')
+    expect(on.markdown).toContain('分析问题')
     // 正文其他内容不受影响
-    expect(off.markdown).toContain('$E=mc^2$')
+    expect(on.markdown).toContain('$E=mc^2$')
   })
 })
 
