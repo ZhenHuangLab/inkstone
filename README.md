@@ -4,7 +4,7 @@
 
 **Batch-export your entire chatgpt.com history to Obsidian-friendly Markdown — one click, in the page, fully local.**
 
-*An inkstone grinds raw pigment into ink for writing. Inkstone grinds GPT's raw output into ink for your notes — stone to stone（砚 ↔ Obsidian）.*
+*An inkstone grinds raw pigment into ink for writing. Inkstone helps you grind GPT's raw output into ink for your notes.*
 
 [![release](https://img.shields.io/github/v/release/ZhenHuangLab/inkstone)](https://github.com/ZhenHuangLab/inkstone/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/ZhenHuangLab/inkstone/total)](https://github.com/ZhenHuangLab/inkstone/releases)
@@ -22,8 +22,6 @@
   &nbsp;→&nbsp;
   <b>③ Open chatgpt.com, hit ⤓</b>
 </p>
-
-<p align="center"><sub>The script carries its own update URL — new releases install themselves.</sub></p>
 
 ---
 
@@ -66,7 +64,7 @@ Besides Markdown, Inkstone exports a **raw JSON zip** — data insurance, and th
 1. Install [Tampermonkey](https://www.tampermonkey.net/)
 2. Click [the latest inkstone.user.js](https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js) — the script header carries an update URL, so future releases auto-update
 
-<!-- TODO: GreasyFork install link once published -->
+Or GreasyFork: [inkstone](https://greasyfork.org/en/scripts/586688-inkstone-chatgpt-%E5%AF%B9%E8%AF%9D%E5%AF%BC%E5%87%BA)
 
 Or build from source:
 
@@ -82,15 +80,6 @@ Open chatgpt.com (logged in) → click the **⤓ button left of the Share button
 - The button position is switchable (panel → advanced settings): next to Share in the top bar, or a glass button beside the input box
 - The UI follows ChatGPT's appearance settings automatically (light/dark + accent color)
 - Exports are cancelable; a single failed conversation never aborts the run — failures are summarized in `_failures.json`
-
-## ⚠️ Rate limits & account safety
-
-> [!WARNING]
-> Sustained high-frequency fetching can trip ChatGPT's **account-level anti-abuse measures**: older conversations progressively return 429 → 404 and the conversation list gets truncated, recovering only after several hours. Inkstone's default pacing is deliberately conservative — **do not make it faster.**
-
-Inkstone ships a full mitigation stack (learned the hard way): global request spacing, adaptive slowdown on 429 that never speeds back up, a ~25 s breather every ~80 requests, three distinct 429 classes (with `Retry-After` → global cooldown; headerless → fast per-item give-up; consecutive across URLs → short cooldown), a final low-speed retry pass over failed items, and a protective abort when failures pile up.
-
-Two ways to keep request volume down: incremental sync means you only pay for the full grab once, and turning off attachment downloads reduces requests drastically.
 
 ## Offline CLI
 

@@ -4,7 +4,7 @@
 
 **在 chatgpt.com 页内一键批量导出全部对话为 Obsidian 友好的 Markdown——全程本地处理。**
 
-*砚是把原料研磨成墨、供你书写的石头——Inkstone 把 GPT 的原始输出研磨成能写进笔记的墨，石对石（砚 ↔ Obsidian）。*
+*砚是把原料研磨成墨、供你书写的石头——Inkstone 帮助你把 GPT 的原始输出研磨成能写进笔记的墨。*
 
 [![release](https://img.shields.io/github/v/release/ZhenHuangLab/inkstone)](https://github.com/ZhenHuangLab/inkstone/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/ZhenHuangLab/inkstone/total)](https://github.com/ZhenHuangLab/inkstone/releases)
@@ -23,8 +23,6 @@
   <b>③ 打开 chatgpt.com，点 ⤓</b>
 </p>
 
-<p align="center"><sub>脚本头内置更新地址，之后发新版会自动更新。</sub></p>
-
 ---
 
 ## 为什么需要 Inkstone
@@ -35,7 +33,7 @@ Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backen
 
 <!-- TODO: 截图——面板 UI + 导出笔记在 Obsidian 里的效果 -->
 
-## 特性
+## Features
 
 ### 转换质量
 
@@ -66,8 +64,7 @@ Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backen
 1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)
 2. 点击安装 [最新版 inkstone.user.js](https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js)（脚本头内置更新地址，之后发新版会自动更新）
 
-<!-- TODO: GreasyFork 发布后补安装链接 -->
-
+或 GreasyFork: [inkstone](https://greasyfork.org/en/scripts/586688-inkstone-chatgpt-%E5%AF%B9%E8%AF%9D%E5%AF%BC%E5%87%BA)
 或从源码构建：
 
 ```bash
@@ -82,15 +79,6 @@ bun run build        # 产物 dist/inkstone.user.js，拖进 Tampermonkey 即可
 - 按钮位置可换（面板 → 高级设置）：顶栏 Share 旁，或输入框旁的玻璃圆钮
 - UI 主题色自动跟随 ChatGPT 的外观设置（明暗 + accent color）
 - 可随时取消；单条对话失败不中断整体导出，失败汇总进 `_failures.json`
-
-## ⚠️ 限流与账号安全
-
-> [!WARNING]
-> 持续高频抓取会触发 ChatGPT **账号级反滥用**：旧对话渐进式 429 → 404、对话列表被截断，数小时后才解冻。Inkstone 的默认节奏是刻意保守的——**千万别调快。**
-
-Inkstone 内置完整的抗限流方案（实测教训换来的）：全局请求间距、429 自适应减速不回落、每 ~80 请求喘息 25s、三类 429 区分（带 `Retry-After` → 全局冷却；无头 → 条目级快速放弃；跨 URL 连续 → 短冷却）、失败条目结尾低速重试、失败过多保护性中止。
-
-降低请求量的两个办法：增量同步让全量抓取一辈子只需付一次代价；关闭「下载附件」能让请求量骤减。
 
 ## 离线 CLI
 
