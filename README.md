@@ -1,57 +1,124 @@
-# Inkstone（砚）
+<div align="center">
 
-在 chatgpt.com 页内一键批量导出全部对话为 Obsidian 友好的 Markdown 的油猴脚本。
-名取「砚」：砚是把原料研磨成墨、供你书写的石头——Inkstone 把 GPT 的原始输出研磨成能写进笔记的墨，石对石（砚 ↔ Obsidian）。
-目标与完整设计见 [PLAN.md](PLAN.md)。
+# Inkstone
 
-## 特性（P1 + P2 已实现）
+**Batch-export your entire chatgpt.com history to Obsidian-friendly Markdown — one click, in the page, fully local.**
 
-- 页内浮动面板，一键抓取**全部对话**（backend-api 实时抓取，全程本地处理）
-- 导出 **Markdown zip**：
-  - `# User` / `# ChatGPT` 作为最高级标题分隔轮次，消息内的 H1–H6 整体降一级
-  - `\( \)` / `\[ \]` → `$` / `$$` 公式定界符转换（代码块感知），货币 `$` 转义
-  - **引用还原**：联网搜索引用 → 行内 `[来源](url)` 链接 + 文末 `# Sources` 汇总；文件引用 → 文件名说明；还原不了的标记剥离，绝不留乱码
-  - **附件下载**：对话里的图片全部下载进笔记同目录下的附件子文件夹（默认 `conversations/attachments/`，Obsidian `![[wikilink]]` 内联）；用户上传的文件 ≤2MB 下载并链接，超限的留说明占位
-  - **目录可定制**：笔记子文件夹（默认 `conversations`，可 `a/b` 嵌套、可留空写根目录）与附件子文件夹（默认 `attachments`，相对笔记所在目录、可留空与笔记同层）均可在设置里改；附件链接是相对 .md 的严格相对路径，GitHub/VS Code 预览同样可用
-  - 思维链、工具运行痕迹（代码解释器代码、搜索请求、运行输出）均折叠 callout 包裹，且**默认都不写入**，高级设置「写入思考过程」「写入工具过程」分别开启（CLI 对应 `--thoughts` / `--tool-traces`）
-  - 未知内容类型原样保留进折叠 callout，绝不静默丢内容
-  - frontmatter：title / chat_id / url / created / updated / model / tags
-- 导出**原始 JSON zip**：数据保险 + 转换器 fixture 来源
-- **增量同步**：水位线记录每条对话的 update_time，重导只抓有变化的（可关；面板有「重置增量记录」）——重负载的全量抓取一辈子只需一次
-- **抗限流**（实测教训换来的完整方案）：全局请求间距 + 429 自适应减速不回落 + 每 ~80 请求喘息 25s + 三类 429 区分（带 Retry-After 全局冷却 / 无头条目级快速放弃 / 跨 URL 连续短冷却）+ 失败条目结尾低速重试 + 失败过多保护性中止。⚠️ 持续高频抓取会触发 ChatGPT 账号级反滥用（旧对话渐进式 429→404、列表截断，数小时后解冻），千万别调快
-- 「下载附件」开关：关闭后纯文本导出，请求量骤减
-- 可取消、单条失败不中断（汇总进 `_failures.json`）
+*An inkstone grinds raw pigment into ink for writing. Inkstone grinds GPT's raw output into ink for your notes — stone to stone（砚 ↔ Obsidian）.*
 
-## 安装
+[![release](https://img.shields.io/github/v/release/ZhenHuangLab/inkstone)](https://github.com/ZhenHuangLab/inkstone/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/ZhenHuangLab/inkstone/total)](https://github.com/ZhenHuangLab/inkstone/releases)
+[![license](https://img.shields.io/github/license/ZhenHuangLab/inkstone)](./LICENSE)
+<!-- TODO: GreasyFork badge once published: [![greasyfork](https://img.shields.io/greasyfork/v/SCRIPT_ID)](https://greasyfork.org/scripts/SCRIPT_ID) -->
 
-1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)
-2. 点击安装 [最新版 inkstone.user.js](https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js)（脚本头内置更新地址，之后发新版会自动更新）
+**English** · [简体中文](./README.zh-CN.md)
 
-或从源码构建：
+</div>
+
+<p align="center">
+  <a href="https://www.tampermonkey.net/"><b>① Install Tampermonkey</b></a>
+  &nbsp;→&nbsp;
+  <a href="https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js"><b>② Install Inkstone</b></a>
+  &nbsp;→&nbsp;
+  <b>③ Open chatgpt.com, hit ⤓</b>
+</p>
+
+<p align="center"><sub>The script carries its own update URL — new releases install themselves.</sub></p>
+
+---
+
+## Why Inkstone
+
+Your ChatGPT history holds real work, but getting it into a vault is painful. The official export is a raw JSON dump: tool and system messages are stripped (Canvas and code-interpreter output simply aren't there), some attachments have already expired server-side, math arrives in `\( \)` delimiters Obsidian won't render, and web-search citations turn into private-use Unicode garbage. Copy-pasting by hand doesn't scale past ten conversations, let alone a thousand.
+
+Inkstone runs inside chatgpt.com and fetches conversations through the same backend API the app itself uses, then converts everything locally in your browser — nothing ever leaves the page. The result is Markdown that reads natively in Obsidian: real headings per turn, `$` / `$$` math, resolved citations, downloaded images, clean frontmatter.
+
+<!-- TODO: screenshots — panel UI + an exported note inside Obsidian -->
+
+## Features
+
+### Conversion quality
+
+- `# User` / `# ChatGPT` top-level headings separate turns; headings inside messages are demoted one level (H1–H6)
+- `\( \)` / `\[ \]` → `$` / `$$` math-delimiter conversion (code-block aware); currency `$` escaped
+- **Citations restored**: web-search citations become inline `[source](url)` links plus a `# Sources` section at the end; file citations become filename notes; anything unresolvable is stripped — no garbled markers, ever
+- Chain-of-thought and tool traces (code-interpreter code, search queries, run output) are wrapped in collapsed callouts and **not written by default** — opt in via advanced settings ("write thoughts" / "write tool traces"), or `--thoughts` / `--tool-traces` in the CLI
+- Unknown content types are preserved verbatim inside collapsed callouts — nothing is ever silently dropped
+- Frontmatter: `title / chat_id / url / created / updated / model / tags`
+
+### Attachments
+
+- Every image in a conversation is downloaded into an attachments subfolder next to the notes (default `conversations/attachments/`, inlined with Obsidian `![[wikilink]]`)
+- User-uploaded files ≤ 2 MB are downloaded and linked; larger ones get a placeholder note
+- Folder layout is customizable in settings: the notes subfolder (default `conversations`, nestable as `a/b`, empty = vault root) and the attachments subfolder (default `attachments`, relative to the notes folder, empty = same level as notes). Attachment links are strict relative paths, so GitHub and VS Code previews work too
+- A "download attachments" toggle: turn it off for text-only export with drastically fewer requests
+
+### Incremental sync
+
+A watermark records each conversation's `update_time`, so re-exports only fetch what changed (can be disabled; the panel has a "reset incremental state" button). The heavy full grab only ever happens once.
+
+### Raw JSON export
+
+Besides Markdown, Inkstone exports a **raw JSON zip** — data insurance, and the source of converter fixtures.
+
+## Installation
+
+1. Install [Tampermonkey](https://www.tampermonkey.net/)
+2. Click [the latest inkstone.user.js](https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js) — the script header carries an update URL, so future releases auto-update
+
+<!-- TODO: GreasyFork install link once published -->
+
+Or build from source:
 
 ```bash
 bun install
-bun run build        # 产物 dist/inkstone.user.js，拖进 Tampermonkey 即可
+bun run build        # → dist/inkstone.user.js, drag it into Tampermonkey
 ```
 
-开发时用 `bun run dev`（vite-plugin-monkey 会给出一次性安装地址，改代码热更新）。
+## Usage
 
-## 使用
+Open chatgpt.com (logged in) → click the **⤓ button left of the Share button** in the top bar → pick **Markdown zip** or **raw JSON zip** → unzip into your Obsidian vault.
 
-打开 chatgpt.com（已登录），点顶栏 Share 左侧的 ⤓ 按钮（位置可在面板「高级设置 → 按钮位置」换成输入框旁）→ 选 Markdown zip 或原始 JSON zip → 解压到 Obsidian vault。UI 主题色自动跟随 ChatGPT 的外观设置（明暗 + accent color）。
+- The button position is switchable (panel → advanced settings): next to Share in the top bar, or a glass button beside the input box
+- The UI follows ChatGPT's appearance settings automatically (light/dark + accent color)
+- Exports are cancelable; a single failed conversation never aborts the run — failures are summarized in `_failures.json`
 
-## 开发
+## ⚠️ Rate limits & account safety
+
+> [!WARNING]
+> Sustained high-frequency fetching can trip ChatGPT's **account-level anti-abuse measures**: older conversations progressively return 429 → 404 and the conversation list gets truncated, recovering only after several hours. Inkstone's default pacing is deliberately conservative — **do not make it faster.**
+
+Inkstone ships a full mitigation stack (learned the hard way): global request spacing, adaptive slowdown on 429 that never speeds back up, a ~25 s breather every ~80 requests, three distinct 429 classes (with `Retry-After` → global cooldown; headerless → fast per-item give-up; consecutive across URLs → short cooldown), a final low-speed retry pass over failed items, and a protective abort when failures pile up.
+
+Two ways to keep request volume down: incremental sync means you only pay for the full grab once, and turning off attachment downloads reduces requests drastically.
+
+## Offline CLI
+
+The zero-risk alternative: convert ChatGPT's **official export zip** entirely offline — it never touches the backend API.
 
 ```bash
-bun test             # 转换层单测（纯 TS，无浏览器依赖）
+bun run offline <export.zip | extracted-dir> [-o outdir]
+  [--thoughts] [--tool-traces] [--no-assets]
+  [--link-style wikilink|markdown] [--heading-mode demote|strip]
+  [--notes-dir <name>] [--attachments-dir <name>]
+```
+
+The output layout matches the userscript's. Caveat: the official zip only contains visible user/assistant messages — tool/system payloads (Canvas, code interpreter) are stripped by OpenAI, and some referenced attachments are already expired server-side (placeholders are left in their place).
+
+## Development
+
+```bash
+bun install
+bun run dev          # vite-plugin-monkey prints a one-time install URL; edits hot-reload
+bun test             # converter unit tests (pure TS, no browser needed)
 bun run typecheck
 bun run build
 ```
 
-## 路线图
+## Roadmap
 
-MV3 浏览器扩展（脱离 Tampermonkey、上架商店）、Claude / Gemini 适配。已完成：增量同步、直写 vault、设置面板、Canvas patch 重放、官方导出 zip 离线 CLI（`bun run offline`）。详见 PLAN.md。
+MV3 browser extension (no Tampermonkey, store release) and Claude / Gemini support. Already done: incremental sync, direct-write to an Obsidian vault, settings panel, Canvas patch replay, and the offline CLI. Details in [PLAN.md](./PLAN.md) (Chinese).
 
-## 许可证
+## License
 
 [GPL-3.0](./LICENSE)
