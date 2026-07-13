@@ -9,7 +9,7 @@
 [![release](https://img.shields.io/github/v/release/ZhenHuangLab/inkstone)](https://github.com/ZhenHuangLab/inkstone/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/ZhenHuangLab/inkstone/total)](https://github.com/ZhenHuangLab/inkstone/releases)
 [![license](https://img.shields.io/github/license/ZhenHuangLab/inkstone)](./LICENSE)
-<!-- TODO: GreasyFork 发布后加徽章: [![greasyfork](https://img.shields.io/greasyfork/v/SCRIPT_ID)](https://greasyfork.org/scripts/SCRIPT_ID) -->
+[![greasyfork](https://img.shields.io/greasyfork/v/586688)](https://greasyfork.org/scripts/586688)
 
 [English](./README.md) · **简体中文**
 
@@ -31,7 +31,23 @@ ChatGPT 的对话历史里沉淀着真正的工作成果，但想把它们搬进
 
 Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backend API 抓取对话，然后全部在浏览器本地转换——数据不出页面。产出的 Markdown 在 Obsidian 里原生可读：每轮对话有真实标题、`$` / `$$` 公式、还原后的引用、下载好的图片、干净的 frontmatter。
 
-<!-- TODO: 截图——面板 UI + 导出笔记在 Obsidian 里的效果 -->
+## 截图
+
+| 界面 UI | 高级设置 |
+| ------- | -------- |
+| ![界面 UI](./.github/assets/ui.png) | ![高级设置](./.github/assets/advanced-settings.png) |
+
+| 全部批量导出 | 多选导出 |
+| ------- | ------- |
+| ![全部批量导出](./.github/assets/all-export.png) | ![多选导出](./.github/assets/multi-export.png) |
+
+| 直接导出至 obsidian | 保留思考/工具记录 |
+| ------- | ------- |
+| ![直接导出至 obsidian](./.github/assets/export-to-obsidian.png) | ![保留思考/工具记录](./.github/assets/keep-thoughts-and-tool-traces.png) |
+
+| 保留公式排版与链接 | 保留附件/图片 |
+| ------- | ------- |
+| ![保留公式排版与链接](./.github/assets/keep-formula-and-link.png) | ![保留附件/图片](./.github/assets/keep-attachments-and-images.png) |
 
 ## Features
 
@@ -64,7 +80,7 @@ Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backen
 1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)
 2. 点击安装 [最新版 inkstone.user.js](https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js)（脚本头内置更新地址，之后发新版会自动更新）
 
-或 GreasyFork: [inkstone](https://greasyfork.org/en/scripts/586688-inkstone-chatgpt-%E5%AF%B9%E8%AF%9D%E5%AF%BC%E5%87%BA)
+或 GreasyFork: [inkstone](https://greasyfork.org/scripts/586688)
 或从源码构建：
 
 ```bash

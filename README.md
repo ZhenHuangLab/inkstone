@@ -9,7 +9,7 @@
 [![release](https://img.shields.io/github/v/release/ZhenHuangLab/inkstone)](https://github.com/ZhenHuangLab/inkstone/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/ZhenHuangLab/inkstone/total)](https://github.com/ZhenHuangLab/inkstone/releases)
 [![license](https://img.shields.io/github/license/ZhenHuangLab/inkstone)](./LICENSE)
-<!-- TODO: GreasyFork badge once published: [![greasyfork](https://img.shields.io/greasyfork/v/SCRIPT_ID)](https://greasyfork.org/scripts/SCRIPT_ID) -->
+[![greasyfork](https://img.shields.io/greasyfork/v/586688)](https://greasyfork.org/scripts/586688)
 
 **English** · [简体中文](./README.zh-CN.md)
 
@@ -64,7 +64,7 @@ Besides Markdown, Inkstone exports a **raw JSON zip** — data insurance, and th
 1. Install [Tampermonkey](https://www.tampermonkey.net/)
 2. Click [the latest inkstone.user.js](https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js) — the script header carries an update URL, so future releases auto-update
 
-Or GreasyFork: [inkstone](https://greasyfork.org/en/scripts/586688-inkstone-chatgpt-%E5%AF%B9%E8%AF%9D%E5%AF%BC%E5%87%BA)
+Or GreasyFork: [inkstone](https://greasyfork.org/scripts/586688)
 
 Or build from source:
 
