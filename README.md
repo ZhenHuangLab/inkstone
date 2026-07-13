@@ -31,7 +31,23 @@ Your ChatGPT history holds real work, but getting it into a vault is painful. Th
 
 Inkstone runs inside chatgpt.com and fetches conversations through the same backend API the app itself uses, then converts everything locally in your browser — nothing ever leaves the page. The result is Markdown that reads natively in Obsidian: real headings per turn, `$` / `$$` math, resolved citations, downloaded images, clean frontmatter.
 
-<!-- TODO: screenshots — panel UI + an exported note inside Obsidian -->
+## Screenshots
+
+| Panel UI | Advanced settings |
+| -------- | ----------------- |
+| ![Panel UI](./.github/assets/ui.png) | ![Advanced settings](./.github/assets/advanced-settings.png) |
+
+| Batch export all | Multi-select export |
+| ---------------- | ------------------- |
+| ![Batch export all](./.github/assets/all-export.png) | ![Multi-select export](./.github/assets/multi-export.png) |
+
+| Export directly to Obsidian | Keep thoughts / tool traces |
+| --------------------------- | --------------------------- |
+| ![Export directly to Obsidian](./.github/assets/export-to-obsidian.png) | ![Keep thoughts / tool traces](./.github/assets/keep-thoughts-and-tool-traces.png) |
+
+| Keep math & links | Keep attachments & images |
+| ----------------- | ------------------------- |
+| ![Keep math & links](./.github/assets/keep-formula-and-link.png) | ![Keep attachments & images](./.github/assets/keep-attachments-and-images.png) |
 
 ## Features
 
