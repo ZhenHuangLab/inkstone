@@ -1,6 +1,6 @@
 <div align="center">
 
-# Inkstone
+# Inkstone · 「砚」
 
 **Batch-export your entire chatgpt.com history to Obsidian-friendly Markdown — one click, in the page, fully local.**
 
@@ -127,3 +127,7 @@ MV3 browser extension (no Tampermonkey, store release) and Claude / Gemini suppo
 ## License
 
 [GPL-3.0](./LICENSE)
+
+## Related Links
+
+[LINUX DO](https://linux.do)

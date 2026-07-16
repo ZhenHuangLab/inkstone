@@ -1,6 +1,6 @@
 <div align="center">
 
-# Inkstone
+# Inkstone · 「砚」
 
 **在 chatgpt.com 页内一键批量导出全部对话为 Obsidian 友好的 Markdown——全程本地处理。**
 
@@ -126,3 +126,7 @@ MV3 浏览器扩展（脱离 Tampermonkey、上架商店）、Claude / Gemini �
 ## 许可证
 
 [GPL-3.0](./LICENSE)
+
+## 友情链接
+
+[LINUX DO](https://linux.do)
