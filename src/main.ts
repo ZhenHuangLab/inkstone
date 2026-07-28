@@ -3,8 +3,10 @@ import {
   ensureAlive,
   fetchBinary,
   fetchConversation,
+  createConversationPager,
   getAccessToken,
   listAllConversations,
+  type ConversationPager,
   mapConcurrent,
   resolveFileDownload,
   SizeLimitError,
@@ -42,8 +44,12 @@ import type { ConversationListItem } from './types'
 const MAX_IMAGE_BYTES = 30 * 1024 * 1024
 
 let activeCancel: CancelToken | null = null
-// 「选择对话…」拉取的列表缓存：导出所选时直接用，不重复拉列表
-let pickedList: ConversationListItem[] | null = null
+// 「选择对话…」的列表缓存：懒加载逐页追加，导出所选时直接用，不重复拉列表
+let pickedList: ConversationListItem[] = []
+const pickedIds = new Set<string>()
+let pager: ConversationPager | null = null
+// 代际号：重新拉取后，旧分页器迟到的响应一律丢弃
+let pagerGen = 0
 
 mountPanel({
   onExport(scope, format, ids, panel, opts) {
@@ -51,6 +57,9 @@ mountPanel({
   },
   onPickList(panel) {
     void loadPickList(panel)
+  },
+  onPickMore(panel) {
+    void loadNextPage(panel)
   },
   onCancel() {
     if (activeCancel) activeCancel.cancelled = true
@@ -97,26 +106,55 @@ async function dispatchExport(
   else await startExport(format, panel, opts, sink)
 }
 
+/**
+ * 重置分页并拉第一页。注意这里**不碰** activeCancel / panel.finish()——
+ * 懒加载不占用「运行中」状态，取消按钮只属于导出流程。
+ */
 async function loadPickList(panel: PanelHandle): Promise<void> {
-  const cancel: CancelToken = { cancelled: false }
-  activeCancel = cancel
+  const gen = ++pagerGen
+  pager = null
+  pickedList = []
+  pickedIds.clear()
   try {
     panel.setStatus('获取登录态…')
-    const token = await getAccessToken(cancel)
+    const token = await getAccessToken()
+    if (gen !== pagerGen) return
+    pager = createConversationPager(token)
     panel.setStatus('拉取对话列表…')
-    pickedList = await listAllConversations(token, (n) => panel.setStatus(`拉取对话列表… 已 ${n} 条`), cancel)
-    const items: PickerItem[] = pickedList.map((i) => ({
+    await loadNextPage(panel, gen)
+  } catch (e) {
+    if (gen !== pagerGen) return
+    panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
+    panel.pickerLoadFailed()
+  }
+}
+
+/** 拉下一页并追加进多选列表（滚动触底时由 UI 回调进来） */
+async function loadNextPage(panel: PanelHandle, gen: number = pagerGen): Promise<void> {
+  if (!pager || gen !== pagerGen) return
+  const current = pager
+  try {
+    const { items, done } = await current.next()
+    if (gen !== pagerGen) return
+    // offset 翻页 + order=updated 期间列表可能漂移，按 id 去重
+    const fresh = items.filter((i) => !pickedIds.has(i.id))
+    for (const i of fresh) pickedIds.add(i.id)
+    pickedList.push(...fresh)
+    const picked: PickerItem[] = fresh.map((i) => ({
       id: i.id,
       title: i.title ?? '',
       updated: shortDate(i.update_time),
     }))
-    panel.showPicker(items)
-    panel.setStatus(`共 ${items.length} 条，勾选后点「导出所选」`)
+    panel.appendPicker(picked, done)
+    panel.setStatus(
+      done
+        ? `共 ${pickedList.length} 条，勾选后点「导出所选」`
+        : `已加载 ${pickedList.length} 条，下拉继续加载`,
+    )
   } catch (e) {
-    panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
-  } finally {
-    activeCancel = null
-    panel.finish()
+    if (gen !== pagerGen) return
+    panel.setStatus(e instanceof CancelledError ? '已取消' : `拉取列表出错：${String(e)}`)
+    panel.pickerLoadFailed()
   }
 }
 
@@ -131,7 +169,7 @@ async function exportSelection(
   activeCancel = cancel
   try {
     const wanted = new Set(ids)
-    const items = (pickedList ?? []).filter((i) => wanted.has(i.id))
+    const items = pickedList.filter((i) => wanted.has(i.id))
     if (items.length === 0) {
       panel.setStatus('所选对话已不在列表缓存里，请重新拉取列表')
       return

@@ -168,6 +168,55 @@ export async function listAllConversations(
   return all
 }
 
+export interface ConversationPager {
+  /** 拉下一页；done=true 表示已确认到底（此后再调直接返回空页 + done） */
+  next(): Promise<{ items: ConversationListItem[]; done: boolean }>
+}
+
+/**
+ * 惰性分页器：把 listAllConversations 的翻页与防御逻辑逐页化，供「选择对话」
+ * 的懒加载使用（切到「选择」不再一次性翻完全部页）。终止条件与全量版一致：
+ * 只认空页，且空页要隔几秒重试确认，连续空 3 次才算到底。
+ */
+export function createConversationPager(token: string, cancel?: CancelToken): ConversationPager {
+  let offset = 0
+  let limit = 100
+  let emptyRetries = 0
+  let done = false
+  return {
+    async next() {
+      if (done) return { items: [], done: true }
+      for (;;) {
+        ensureAlive(cancel)
+        let page: ConversationListPage
+        try {
+          page = await listConversationsPage(token, offset, limit, cancel)
+        } catch (e) {
+          if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 429 && limit > 50) {
+            limit = 50
+            continue
+          }
+          throw e
+        }
+        const items = page.items ?? []
+        if (items.length === 0) {
+          // 首页即空 = 账号真没对话；否则可能是列表索引瞬时降级，隔几秒重试确认
+          if (offset === 0 || emptyRetries >= 2) {
+            done = true
+            return { items: [], done: true }
+          }
+          emptyRetries++
+          await sleep(4000 * emptyRetries)
+          continue
+        }
+        emptyRetries = 0
+        offset += items.length
+        return { items, done: false }
+      }
+    },
+  }
+}
+
 export async function fetchConversation(
   token: string,
   id: string,

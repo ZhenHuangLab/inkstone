@@ -48,8 +48,12 @@ export interface PanelHandle {
   setStatus(text: string): void
   setProgress(done: number, total: number): void
   finish(): void
-  /** 渲染对话多选列表（onPickList 拿到数据后调用） */
-  showPicker(items: PickerItem[]): void
+  /** 追加一页对话到多选列表；done=true 表示列表已到底 */
+  appendPicker(items: PickerItem[], done: boolean): void
+  /** 清空多选列表（重新拉取前调用） */
+  clearPicker(): void
+  /** 某一页拉取失败：解除加载中状态，允许再次触发 */
+  pickerLoadFailed(): void
 }
 
 export interface PanelCallbacks {
@@ -61,8 +65,10 @@ export interface PanelCallbacks {
     panel: PanelHandle,
     opts: ExportOptions,
   ): void
-  /** 范围切到「选择」时触发：回调负责拉列表并调用 panel.showPicker */
+  /** 首次切到「选择」或点重新拉取：回调负责重置分页并拉第一页 */
   onPickList(panel: PanelHandle): void
+  /** 列表滚到底部：回调负责拉下一页并调用 panel.appendPicker */
+  onPickMore(panel: PanelHandle): void
   onCancel(): void
   onResetWatermark(): void
   /** target=folder 时点「重新选择文件夹」：忘掉记住的目录句柄 */
@@ -240,6 +246,8 @@ const STYLE = `
   .picker .row.hidden { display: none; }
   .picker .row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .picker .row .d { color: var(--muted); font-size: 10px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .picker .sentinel { padding: 7px 0; text-align: center; color: var(--muted); font-size: 11px; }
+  .picker .sentinel:empty { padding: 0; }
   .picker .empty { display: none; padding: 14px 0; text-align: center; color: var(--muted); font-size: 12px; }
   .picker .empty.visible { display: block; }
   .picker .count { color: var(--muted); font-size: 11px; margin-top: 5px; font-variant-numeric: tabular-nums; }
@@ -493,7 +501,7 @@ export function mountPanel(cb: PanelCallbacks): void {
         <button data-sel="none">清空</button>
         <button data-sel="reload" title="重新拉取列表" aria-label="重新拉取列表">${ICON_RELOAD}</button>
       </div>
-      <div class="list"></div>
+      <div class="list"><div class="sentinel"></div></div>
       <div class="empty">没有匹配的对话</div>
       <div class="count">已选 0 条</div>
     </div>
@@ -671,6 +679,7 @@ export function mountPanel(cb: PanelCallbacks): void {
   const advEl = $<HTMLDivElement>('.adv')
   const pickerEl = $<HTMLDivElement>('.picker')
   const pickerList = pickerEl.querySelector<HTMLDivElement>('.list')!
+  const sentinel = pickerList.querySelector<HTMLDivElement>('.sentinel')!
   const pickerSearch = pickerEl.querySelector<HTMLInputElement>('input[type="search"]')!
   const pickerEmpty = pickerEl.querySelector<HTMLDivElement>('.empty')!
   const pickerCount = pickerEl.querySelector<HTMLSpanElement>('.count')!
@@ -681,7 +690,10 @@ export function mountPanel(cb: PanelCallbacks): void {
   let scope: ExportScope = 'current'
   let format: ExportFormat = 'markdown'
   let target: 'zip' | 'folder' = cb.settings.supportsFolder ? cb.settings.values.target : 'zip'
-  let listLoaded = false
+  // 列表加载态与导出的 running 态刻意分开：分页加载期间面板全程可用
+  let listLoaded = false // 已至少加载过一页
+  let listDone = false // 已确认拉到底
+  let listLoading = false // 有一页正在拉取中
   let running = false
 
   const optOf = (name: string) => panel.querySelector<HTMLInputElement>(`input[data-opt="${name}"]`)!.checked
@@ -766,10 +778,19 @@ export function mountPanel(cb: PanelCallbacks): void {
       .filter((b) => b.checked)
       .map((b) => b.dataset['id']!)
 
+  // 搜索过滤：input 事件与「追加新一页」共用，保证新行立刻套用当前过滤词
+  function applySearchFilter(): void {
+    const q = pickerSearch.value.trim().toLowerCase()
+    for (const row of rows()) {
+      row.classList.toggle('hidden', q !== '' && !row.title.toLowerCase().includes(q))
+    }
+  }
+
   // 范围/格式变化后统一刷新：选项可用性、空状态、主按钮文案与可点性
   function refresh(): void {
     pickerEl.classList.toggle('open', scope === 'selection')
-    pickerEmpty.classList.toggle('visible', listLoaded && visibleRows().length === 0)
+    // 没到底之前不说「没有匹配」——可能只是还没加载到
+    pickerEmpty.classList.toggle('visible', listLoaded && listDone && visibleRows().length === 0)
     advEl.querySelector('[data-row="incremental"]')!.classList.toggle('dis', scope !== 'all')
     // JSON 导出走固定的 raw/ 目录，Markdown 专属选项一并禁用
     for (const name of ['assets', 'thoughts', 'toolTraces', 'maxFileMB', 'linkStyle', 'headingMode', 'notesDir', 'attachmentsDir']) {
@@ -777,7 +798,10 @@ export function mountPanel(cb: PanelCallbacks): void {
     }
     forgetFolderEl.hidden = target !== 'folder'
     const n = selectedIds().length
-    pickerCount.textContent = `已选 ${n} 条`
+    const loaded = rows().length
+    pickerCount.textContent = listDone
+      ? `已选 ${n} / 共 ${loaded} 条`
+      : `已选 ${n} 条 · 已加载 ${loaded} 条（下拉加载更多）`
     goEl.textContent =
       scope === 'current' ? '导出当前对话' : scope === 'all' ? '导出全部对话' : `导出所选（${n} 条）`
     goEl.disabled = running || (scope === 'selection' && n === 0)
@@ -791,6 +815,11 @@ export function mountPanel(cb: PanelCallbacks): void {
       cancelEl.disabled = false
       progressEl.classList.remove('visible')
       progressEl.value = 0
+      // 导出期间懒加载被挂起，结束后恢复
+      if (listLoaded && !listDone && !listLoading) {
+        sentinel.textContent = '下拉加载更多'
+        maybeAutoFill()
+      }
     }
     refresh()
   }
@@ -805,8 +834,7 @@ export function mountPanel(cb: PanelCallbacks): void {
       progressEl.value = done
     },
     finish: () => setRunning(false),
-    showPicker: (items) => {
-      pickerList.innerHTML = ''
+    appendPicker: (items, done) => {
       for (const item of items) {
         const row = document.createElement('label')
         row.className = 'row'
@@ -821,16 +849,69 @@ export function mountPanel(cb: PanelCallbacks): void {
         d.className = 'd'
         d.textContent = item.updated
         row.append(box, t, d)
-        pickerList.append(row)
+        // 始终插在哨兵之前，哨兵保持在列表末尾
+        sentinel.before(row)
       }
-      pickerSearch.value = ''
       listLoaded = true
+      listLoading = false
+      listDone = done
+      applySearchFilter()
+      sentinel.textContent = done ? '' : '下拉加载更多'
       refresh()
+      // 这一页没填满滚动容器（列表还没出现滚动条）时哨兵不会再次进入视口，
+      // 需要主动续拉，否则懒加载会停在第一页。
+      if (!done) queueMicrotask(maybeAutoFill)
+    },
+    clearPicker: () => {
+      for (const r of rows()) r.remove()
+      listLoaded = false
+      listDone = false
+      listLoading = false
+      sentinel.textContent = ''
+      refresh()
+    },
+    pickerLoadFailed: () => {
+      listLoading = false
+      sentinel.textContent = '加载失败，点此重试'
     },
   }
 
+  /** 触发下一页；加载中/已到底/导出进行中都不重复触发 */
+  function requestMore(): void {
+    if (listLoading || listDone || running) return
+    // 一页都没成功过 = 首页拉取失败，重试要走完整的重置流程
+    if (!listLoaded) {
+      loadList()
+      return
+    }
+    listLoading = true
+    sentinel.textContent = '加载中…'
+    cb.onPickMore(handle)
+  }
+
+  /** 内容不足一屏时哨兵始终可见，IntersectionObserver 不会再报回调，这里补一脚。
+   *  面板收起时列表高度为 0，不能当作「没填满」，否则会在后台闷头拉完全部页。 */
+  function maybeAutoFill(): void {
+    const h = pickerList.clientHeight
+    if (h > 0 && pickerList.scrollHeight <= h + 8) requestMore()
+  }
+
+  const pickerObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) requestMore()
+    },
+    { root: pickerList, rootMargin: '80px' },
+  )
+  pickerObserver.observe(sentinel)
+
+  sentinel.addEventListener('click', requestMore)
+
+  /** 重置并拉第一页（首次进入「选择」/ 点重新拉取按钮） */
   function loadList(): void {
-    setRunning(true)
+    handle.clearPicker()
+    pickerSearch.value = ''
+    listLoading = true
+    sentinel.textContent = '加载中…'
     cb.onPickList(handle)
   }
 
@@ -855,11 +936,10 @@ export function mountPanel(cb: PanelCallbacks): void {
   }
 
   pickerSearch.addEventListener('input', () => {
-    const q = pickerSearch.value.trim().toLowerCase()
-    for (const row of rows()) {
-      row.classList.toggle('hidden', q !== '' && !row.title.toLowerCase().includes(q))
-    }
+    applySearchFilter()
     refresh()
+    // 过滤后列表可能缩到不足一屏，哨兵重新露出来就该继续加载
+    maybeAutoFill()
   })
   pickerList.addEventListener('change', refresh)
   pickerEl.querySelector('[data-sel="all"]')!.addEventListener('click', () => {
