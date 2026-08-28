@@ -1,4 +1,4 @@
-# Inkstone（砚）— ChatGPT 对话导出
+# Inkstone（砚）— ChatGPT / Claude 对话导出
 
 > 名取「砚」：把 GPT 的原始输出研磨成能写进笔记的墨；石对石（砚 ↔ Obsidian）。
 
@@ -6,7 +6,8 @@
 
 ## 目标
 
-- 在 chatgpt.com 页内一键**批量导出全部对话**为 Obsidian 等笔记软件友好的 Markdown
+- 在 chatgpt.com / claude.ai 页内一键导出对话为 Obsidian 等笔记软件友好的 Markdown
+  （ChatGPT 支持批量与增量；Claude 首版只做当前对话，理由见 P5）
 - 高保真：公式、引用链接、代码、图片/附件、思维链、Canvas 不丢不乱
 - 增量同步：重跑只导出有变化的对话
 - 全程本地处理，不经任何第三方服务
@@ -57,30 +58,52 @@
 
 ## 项目结构
 
+依赖方向单向收敛：`sites/* → core/*`。core 不认识任何站点，sites 不认识编排。
+
 ```
 inkstone/
   package.json          # bun（scripts: dev/build/test/typecheck/offline）
-  vite.config.ts        # vite-plugin-monkey
+  vite.config.ts        # vite-plugin-monkey（match: chatgpt.com / claude.ai）
   cli/
     export.ts           # 官方导出 zip → vault 的离线 CLI（bun 直跑，P4.2）
+  docs/
+    claude-adapter-feasibility.md   # Claude 移植可行性评估（P5 的依据）
+    claude-probe.js                 # 贴进 claude.ai 控制台的结构 / 限流探针
   src/
-    main.ts             # UI 注入 + 流程编排 + 输出 Sink（zip/直写）
-    api.ts              # backend-api 客户端（token/列表/全文/附件）
-    convert/
+    main.ts             # 流程编排 + 输出 Sink（zip/直写）——站点无关
+    ui.ts               # 浮动面板 + 进度——站点无关，锚点与配色问 adapter
+    state.ts            # 增量水位线（按站点分表）+ 设置持久化
+    core/               # ← 站点无关内核
+      ir.ts             # 中间表示：IRConversation / IRTurn / IRBlock
+      render.ts         # IR → Markdown（轮次标题、callout、围栏、frontmatter）
+      fetcher.ts        # 限速 / 退避 / 并发池 / 取消 / 限流观测（每站点一个实例）
+    sites/
+      types.ts          # SiteAdapter 契约（取数 + 转换 + 界面锚点 + 批量能力）
+      index.ts          # 按 location.host 分派
+      chatgpt/
+        index.ts        # adapter 实装
+        convert.ts      # backend-api JSON → IR（content_type 分发、canmore 语义）
+      claude/
+        index.ts        # adapter 实装（supportsBatch: false）
+        api.ts          # 内部 API 客户端 + 保守限流参数 + 分页器（未接界面）
+        types.ts        # 从宽的字段类型，[待测] 处已标注
+        convert.ts      # 内部 API JSON → IR（块级分发、主线回溯、附件两处来源）
+        artifacts.ts    # artifact create/update/rewrite 折叠成终稿
+    convert/            # ChatGPT 专属转换 + 通用文本工具（历史路径，测试直接引用）
+      markdown.ts       # 兼容壳：conversationToIR + renderConversation
       linearize.ts      # mapping 树 → 线性消息
-      markdown.ts       # 消息 → md（content_type 分发；assetLink 链接风格）
-      math.ts           # 公式定界符转换（代码块感知）
-      citations.ts      # 引用标记还原（matched_text 通道 + 官方导出 token/顺序配对通道）
-      headings.ts       # 标题降级 / 剥离为加粗
       canvas.ts         # Canvas textdoc patch 重放
+      citations.ts      # 私有区引用标记还原
+      math.ts           # 公式定界符转换（代码块感知）—— 两站点共用
+      headings.ts       # 标题降级 / 剥离为加粗 —— 两站点共用
+      codeaware.ts      # 代码块感知的文本变换基础设施 —— 两站点共用
+    api.ts              # ChatGPT backend-api 客户端（端点与字段，节奏交给 core）
     output/
       zip.ts            # fflate 打包
       fsaccess.ts       # File System Access 直写 vault（句柄存 IndexedDB）
-    state.ts            # 增量水位线 + 设置持久化
-    ui.ts               # 浮动面板 + 进度
   test/
-    fixtures/*.json     # 真实对话 JSON（脱敏）
-    *.test.ts           # bun test
+    fixtures/*.json     # 对话 JSON（ChatGPT 真实脱敏 / Claude 合成）
+    *.test.ts           # bun test（132 个）
 ```
 
 ## 阶段
@@ -94,7 +117,34 @@ inkstone/
 - **P4 脱离油猴（用户明确期望）**：转换层（convert/）零浏览器依赖、api.ts 只依赖 fetch，天然可复用到：
   1. **MV3 浏览器扩展**——同一套 src，加 manifest + content script 打包目标（vite 多入口）；不再依赖 Tampermonkey，可上架商店（用户拍板：等功能完善后再做/上架）
   2. **官方导出 zip 的离线 CLI** ✅（2026-07-10，`bun run offline <zip|目录> [-o 输出]`）——完全不碰 backend-api，零限流风险；432 对话 + 248 附件 ~8s 转完；支持 `--link-style/--heading-mode/--no-thoughts/--no-assets`
-  3. Claude/Gemini adapter
+  3. Claude adapter ✅ 骨架（2026-08-28，见下）／ Gemini 待做
+
+- **P5 多站点架构 + Claude adapter**（2026-08-28）：见 `docs/claude-adapter-feasibility.md`（可行性评估）
+  - **架构**：引入站点无关的中间表示（IR）与适配器契约，依赖方向变成
+    `sites/{chatgpt,claude}/ → core/{ir,render,fetcher}`。编排（main.ts）与界面（ui.ts）
+    不再认识任何一家的端点、字段或 DOM；新增站点 = 新增一个 adapter，不改编排。
+    重构以「现有 102 个测试断言一字不改地通过」为验收标准，行为逐字节等价。
+  - **两侧数据模型的结构性差异**：ChatGPT 一条消息一种 content_type（消息级分发），
+    Claude 一条消息多个 typed block 按序交错（块级分发）。主线定位则同构——
+    两边都是「叶子 + parent 链回溯后反转」。
+  - **Claude 侧的脏活更少**：Canvas 的正则 patch 重放（150 行）与私有区 Unicode 引用
+    还原（178 行）在 Claude 都不需要——artifact 的 update 是字面量 `old_str`→`new_str`，
+    引用是结构化数组。artifact 折叠约 40 行。
+  - **⚠️ 首版刻意只做「导出当前对话」**：批量的地基（分页器、水位线、并发池、
+    保护性中止）全部就位且已单测，但 `supportsBatch: false` 关着。理由是限流画像
+    未知——ChatGPT 侧的参数是 344 + 432 对话实测调出来的，Claude 侧一条实测数据
+    都没有。调研过的三个开源 claude.ai 导出器**没有一个实现了 429 退避**
+    （最激进的是 3 并发 + 固定 200ms 间隔且不看 429），所以没有可借鉴的安全参数。
+  - **Claude 限流起步参数**（保守，待实测调整）：间距 1500ms（ChatGPT 侧的两倍慢）、
+    上限 8000ms、每 40 请求歇 30s、最多重试 6 次。每个站点持有独立的 fetcher 实例，
+    一边的限流不拖累另一边。吃到 429 时导出完成文案会报出次数、被推大的间距与
+    服务端要求的最长等待——未知站点的节奏只能靠实测看清，先让它可见再谈调参。
+  - **待实测**：`docs/claude-probe.js` 可直接粘进 claude.ai 控制台，打印字段骨架
+    （不打印对话内容）并做一次 ≤8 请求的保守限流试探。清单见可行性文档第五节：
+    分页是否生效、thinking 字段名、citations 挂载形态、附件地址能否直取字节、
+    公式定界符、Projects 字段名、FAB 锚点选择器。
+  - **未做**：Claude 的行内引用锚定（citations 的字符级定位字段未实测，首版只把
+    来源汇总进文末 Sources，正文一字不动）；Claude 官方导出 zip 的离线 CLI 通道。
 
 ## 实战经验（2026-07-08 E2E，344 对话实测）
 

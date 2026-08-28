@@ -1,28 +1,25 @@
 import {
   CancelledError,
   ensureAlive,
-  fetchBinary,
-  fetchConversation,
-  createConversationPager,
-  getAccessToken,
-  listAllConversations,
-  listProjects,
-  projectNameOf,
-  type ConversationPager,
   mapConcurrent,
-  resolveFileDownload,
   SizeLimitError,
   sleep,
   type CancelToken,
-} from './api'
+} from './core/fetcher'
+import type { AssetRef } from './core/ir'
 import {
   assetLink,
   assetToken,
-  conversationToMarkdown,
   filenameFor,
+  renderConversation,
   sanitizeName,
-  type AssetRef,
-} from './convert/markdown'
+} from './core/render'
+import {
+  resolveAdapter,
+  type SiteAdapter,
+  type SiteConversationItem,
+  type SitePager,
+} from './sites'
 import { downloadBlob, makeZip, strToU8, type ZipEntries } from './output/zip'
 import {
   acquireVaultDir,
@@ -40,44 +37,59 @@ import {
   type Watermark,
 } from './state'
 import { mountPanel, type ExportFormat, type ExportOptions, type PanelHandle, type PickerItem } from './ui'
-import type { ConversationListItem } from './types'
 
 // 图片始终下载，上限只防异常；文件类附件的上限由面板设置（opts.maxFileMB）
 const MAX_IMAGE_BYTES = 30 * 1024 * 1024
 
+// @match 已限定域名，理论上必命中；万一命中不了就整个不挂载，页面上不留痕迹
+let site!: SiteAdapter
+const detected = resolveAdapter()
+
 let activeCancel: CancelToken | null = null
 // 「选择对话…」的列表缓存：懒加载逐页追加，导出所选时直接用，不重复拉列表
-let pickedList: ConversationListItem[] = []
+let pickedList: SiteConversationItem[] = []
 const pickedIds = new Set<string>()
-let pager: ConversationPager | null = null
+let pager: SitePager | null = null
 // 代际号：重新拉取后，旧分页器迟到的响应一律丢弃
 let pagerGen = 0
 
-mountPanel({
-  onExport(scope, format, ids, panel, opts) {
-    void dispatchExport(scope, format, ids, panel, opts)
-  },
-  onPickList(panel, source) {
-    void loadPickList(panel, source)
-  },
-  onPickMore(panel) {
-    void loadNextPage(panel)
-  },
-  onCancel() {
-    if (activeCancel) activeCancel.cancelled = true
-  },
-  onResetWatermark() {
-    clearWatermarks(['markdown', 'json'])
-  },
-  onForgetFolder() {
-    void forgetVaultDir()
-  },
-  settings: {
-    values: loadSettings(),
-    supportsFolder: supportsDirectoryPicker(),
-    onSettingsChange: (patch) => saveSettings(patch),
-  },
-})
+/** 水位线按站点分开存：两边的对话 id 空间互不相干，共用一张表会互相污染。 */
+const wmKey = (kind: string): string => `${site.id}:${kind}`
+
+if (detected) {
+  site = detected
+  mount()
+}
+
+function mount(): void {
+  mountPanel({
+    site: { id: site.id, label: site.label, supportsBatch: site.supportsBatch },
+    siteUi: site.ui,
+    onExport(scope, format, ids, panel, opts) {
+      void dispatchExport(scope, format, ids, panel, opts)
+    },
+    onPickList(panel) {
+      void loadPickList(panel)
+    },
+    onPickMore(panel) {
+      void loadNextPage(panel)
+    },
+    onCancel() {
+      if (activeCancel) activeCancel.cancelled = true
+    },
+    onResetWatermark() {
+      clearWatermarks([wmKey('markdown'), wmKey('json')])
+    },
+    onForgetFolder() {
+      void forgetVaultDir()
+    },
+    settings: {
+      values: loadSettings(),
+      supportsFolder: supportsDirectoryPicker(),
+      onSettingsChange: (patch) => saveSettings(patch),
+    },
+  })
+}
 
 /** 统一入口：folder 目标先在用户手势链路里拿目录句柄，再分发到各导出流程。 */
 async function dispatchExport(
@@ -87,6 +99,12 @@ async function dispatchExport(
   panel: PanelHandle,
   opts: ExportOptions,
 ): Promise<void> {
+  // 界面已按 supportsBatch 隐藏了批量入口，这里是第二道闸：能力没实测过就不放行
+  if (scope !== 'current' && !site.supportsBatch) {
+    panel.setStatus(`${site.label} 暂时只支持导出当前对话`)
+    panel.finish()
+    return
+  }
   let sink: OutputSink | null = null
   if (opts.target === 'folder') {
     try {
@@ -112,22 +130,16 @@ async function dispatchExport(
  * 重置分页并拉第一页。注意这里**不碰** activeCancel / panel.finish()——
  * 懒加载不占用「运行中」状态，取消按钮只属于导出流程。
  */
-async function loadPickList(panel: PanelHandle, source: string): Promise<void> {
+async function loadPickList(panel: PanelHandle): Promise<void> {
   const gen = ++pagerGen
   pager = null
   pickedList = []
   pickedIds.clear()
   try {
     panel.setStatus('获取登录态…')
-    const token = await getAccessToken()
+    const session = await site.prepare()
     if (gen !== pagerGen) return
-    pager = createConversationPager(token, undefined, source)
-    // 来源下拉的 project 选项后台补上，不阻塞第一页；拿不到就只留「全部/主列表」
-    void listProjects(token)
-      .then((ps) => {
-        if (gen === pagerGen) panel.setPickerProjects(ps)
-      })
-      .catch(() => {})
+    pager = site.batch!.createPager(session)
     panel.setStatus('拉取对话列表…')
     await loadNextPage(panel, gen)
   } catch (e) {
@@ -150,9 +162,8 @@ async function loadNextPage(panel: PanelHandle, gen: number = pagerGen): Promise
     pickedList.push(...fresh)
     const picked: PickerItem[] = fresh.map((i) => ({
       id: i.id,
-      title: i.title ?? '',
+      title: i.title,
       updated: shortDate(i.update_time),
-      project: projectNameOf(i.gizmo_id),
     }))
     panel.appendPicker(picked, done)
     panel.setStatus(
@@ -184,14 +195,28 @@ async function exportSelection(
       return
     }
     panel.setStatus('获取登录态…')
-    const token = await getAccessToken(cancel)
-    await exportItems(format, items, 0, token, cancel, panel, opts, sink)
+    const session = await site.prepare(cancel)
+    await exportItems(format, items, 0, session, cancel, panel, opts, sink)
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
   } finally {
     activeCancel = null
     panel.finish()
   }
+}
+
+/**
+ * 限流观测后缀：吃到 429 时如实报出来。
+ *
+ * 未知站点的节奏只能靠实测看清，而实测的第一手材料就是「这次跑下来被推慢了多少」。
+ * 没有 429 时保持安静，不给正常导出添噪音。
+ */
+function throttleNote(): string {
+  const s = site.throttleStats()
+  if (s.hits429 === 0) return ''
+  const parts = [`限流 ${s.hits429} 次`, `间距已放慢到 ${s.spacingMs}ms`]
+  if (s.maxRetryAfterSec > 0) parts.push(`服务端最长要求等待 ${s.maxRetryAfterSec}s`)
+  return `（${parts.join('，')}）`
 }
 
 function shortDate(t: string | number | null | undefined): string {
@@ -250,7 +275,7 @@ function folderSink(dir: FileSystemDirectoryHandle): OutputSink {
 /** 共享处理器：全量 / 所选 / 单对话导出都用它。 */
 function createProcessor(
   kind: ExportFormat,
-  token: string,
+  session: string,
   cancel: CancelToken,
   panel: PanelHandle,
   opts: ExportOptions,
@@ -276,9 +301,8 @@ function createProcessor(
       replacement = skippedNote(a, a.sizeBytes!, cap)
     } else {
       try {
-        const target = await resolveFileDownload(token, a.fileId, cancel)
-        const { bytes, contentType } = await fetchBinary(target.url, cancel, cap)
-        const name = assetFileName(a, target.filename, contentType)
+        const { bytes, filename, contentType } = await site.fetchAsset(session, a, cancel, cap)
+        const name = assetFileName(a, filename, contentType)
         // 链接相对 .md 所在目录，落盘再套上笔记目录前缀
         const linkPath = `${attachPrefix}${a.fileId.slice(-8)}-${name}`
         await sink.put(`${notesPrefix}${linkPath}`, bytes, { precompressed: true })
@@ -313,36 +337,17 @@ function createProcessor(
     return `*(附件未下载：${a.name ?? a.fileId}，${fmtSize(actual)} 超过 ${fmtSize(cap)} 上限)*`
   }
 
-  // 全量/所选导出走分页器，名字早就缓存好了；只有单对话导出会落到这里补拉一次
-  let projectsPass: Promise<unknown> | null = null
-
-  /** 会话详情只带 gizmo_id，project 名要靠 projects 列表换（一次导出最多补拉一次）。 */
-  async function projectNameFor(gizmoId: string | null | undefined): Promise<string | undefined> {
-    if (!gizmoId) return undefined
-    const known = projectNameOf(gizmoId)
-    if (known) return known
-    projectsPass ??= listProjects(token, cancel)
-    try {
-      await projectsPass
-    } catch (e) {
-      if (e instanceof CancelledError) throw e
-      return undefined // 拿不到项目名不影响正文
-    }
-    return projectNameOf(gizmoId)
-  }
-
-  async function processConversation(item: ConversationListItem): Promise<{ path: string }> {
-    const conv = await fetchConversation(token, item.id, cancel)
+  async function processConversation(item: SiteConversationItem): Promise<{ path: string }> {
+    const raw = await site.fetchRaw(session, item.id, cancel)
     if (kind === 'json') {
       const path = `raw/${item.id}.json`
-      await sink.put(path, strToU8(JSON.stringify(conv, null, 2)))
+      await sink.put(path, strToU8(JSON.stringify(raw, null, 2)))
       return { path }
     }
-    const { markdown, title, assets } = conversationToMarkdown(conv, item.id, {
+    const { markdown, title, assets } = renderConversation(site.toIR(raw, item.id), {
       thoughts: opts.thoughts,
       toolTraces: opts.toolTraces,
       headingMode: opts.headingMode,
-      projectName: await projectNameFor(conv.gizmo_id),
     })
     let md = markdown
     let assetIdx = 0
@@ -354,7 +359,7 @@ function createProcessor(
       }
       // 附件多的对话一磨几分钟，进度要有反馈，否则像卡死
       if (assets.length > 3 && assetIdx % 5 === 0) {
-        panel.setStatus(`「${(item.title ?? title).slice(0, 14)}」附件 ${assetIdx}/${assets.length}…`)
+        panel.setStatus(`「${(item.title || title).slice(0, 14)}」附件 ${assetIdx}/${assets.length}…`)
       }
       md = md.split(assetToken(a.fileId)).join(await resolveAsset(a))
     }
@@ -376,40 +381,42 @@ async function exportSingle(
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
   try {
-    const m = /\/c\/([0-9a-f][0-9a-f-]{10,})/i.exec(location.pathname)
-    if (!m) {
-      panel.setStatus('请先打开要导出的对话（网址需含 /c/…）')
+    const convId = site.currentConversationId()
+    if (!convId) {
+      panel.setStatus('请先打开要导出的对话')
       return
     }
     panel.setStatus('获取登录态…')
-    const token = await getAccessToken(cancel)
+    const session = await site.prepare(cancel)
     panel.setStatus('抓取当前对话…')
 
     if (format === 'json' && sink == null) {
       // zip 目标的 json 单对话：裸 .json 下载
-      const conv = await fetchConversation(token, m[1]!, cancel)
-      const name = filenameFor((conv.title ?? '').trim() || 'Untitled', m[1]!).replace(/\.md$/, '.json')
-      downloadBlob(name, strToU8(JSON.stringify(conv, null, 2)), 'application/json')
+      const raw = await site.fetchRaw(session, convId, cancel)
+      const name = filenameFor(site.toIR(raw, convId).title, convId).replace(/\.md$/, '.json')
+      downloadBlob(name, strToU8(JSON.stringify(raw, null, 2)), 'application/json')
       panel.setStatus(`完成：${name}`)
       return
     }
 
     const zs = sink == null ? zipSink() : null
-    const proc = createProcessor(format, token, cancel, panel, opts, zs ?? sink!)
-    const { path } = await proc.processConversation({ id: m[1]!, title: null })
+    const proc = createProcessor(format, session, cancel, panel, opts, zs ?? sink!)
+    const { path } = await proc.processConversation({ id: convId, title: '', update_time: null })
     const baseName = path.split('/').pop()!
 
     if (zs != null) {
       const hasAttachments = Object.keys(zs.entries).some((p) => p !== path)
       if (hasAttachments) {
-        panel.setStatus((await zs.close(panel, baseName.replace(/\.md$/, '.zip'))) + proc.assetSummary())
+        panel.setStatus(
+          (await zs.close(panel, baseName.replace(/\.md$/, '.zip'))) + proc.assetSummary() + throttleNote(),
+        )
       } else {
         const entry = zs.entries[path]!
         downloadBlob(baseName, entry instanceof Uint8Array ? entry : entry[0], 'text/markdown')
-        panel.setStatus(`完成：${baseName}${proc.assetSummary()}`)
+        panel.setStatus(`完成：${baseName}${proc.assetSummary()}${throttleNote()}`)
       }
     } else {
-      panel.setStatus(`完成：${await sink!.close(panel, '')}${proc.assetSummary()}`)
+      panel.setStatus(`完成：${await sink!.close(panel, '')}${proc.assetSummary()}${throttleNote()}`)
     }
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
@@ -429,11 +436,11 @@ async function startExport(
   activeCancel = cancel
   try {
     panel.setStatus('获取登录态…')
-    const token = await getAccessToken(cancel)
+    const session = await site.prepare(cancel)
 
     panel.setStatus('拉取对话列表…')
-    const fullList = await listAllConversations(
-      token,
+    const fullList = await site.batch!.listAll(
+      session,
       (n) => panel.setStatus(`拉取对话列表… 已 ${n} 条`),
       cancel,
     )
@@ -443,7 +450,7 @@ async function startExport(
     }
 
     // 增量：跳过 update_time 与上次导出一致的对话——重负载的全量抓取一辈子只需一次
-    const list = opts.incremental ? selectChanged(fullList, loadWatermark(kind)) : fullList
+    const list = opts.incremental ? selectChanged(fullList, loadWatermark(wmKey(kind))) : fullList
     const skipped = fullList.length - list.length
     if (list.length === 0) {
       panel.setStatus(`没有变化：${fullList.length} 条对话都与上次导出一致`)
@@ -451,7 +458,7 @@ async function startExport(
     }
     if (skipped > 0) panel.setStatus(`跳过未变化 ${skipped} 条，导出 ${list.length} 条…`)
 
-    await exportItems(kind, list, skipped, token, cancel, panel, opts, sink)
+    await exportItems(kind, list, skipped, session, cancel, panel, opts, sink)
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
   } finally {
@@ -463,9 +470,9 @@ async function startExport(
 /** 全量 / 增量 / 所选 共用的导出主体：两遍抓取 + 落地 + 水位线推进。 */
 async function exportItems(
   kind: ExportFormat,
-  list: ConversationListItem[],
+  list: SiteConversationItem[],
   skipped: number,
-  token: string,
+  session: string,
   cancel: CancelToken,
   panel: PanelHandle,
   opts: ExportOptions,
@@ -473,22 +480,22 @@ async function exportItems(
 ): Promise<void> {
   const sink = sinkIn ?? zipSink()
   // 水位线合并推进：导出成功的对话记下 update_time，其余保持原状
-  const wmDraft: Watermark = { ...loadWatermark(kind) }
-  const proc = createProcessor(kind, token, cancel, panel, opts, sink)
+  const wmDraft: Watermark = { ...loadWatermark(wmKey(kind)) }
+  const proc = createProcessor(kind, session, cancel, panel, opts, sink)
 
   // 单条失败不中断，收集后统一重试；失败过多则保护性中止（防止触发/加重账号级反滥用），
   // 已抓取的内容照常落地
   async function runPass(
-    items: readonly ConversationListItem[],
+    items: readonly SiteConversationItem[],
     concurrency: number,
     label: string,
   ): Promise<{
-    failed: ConversationListItem[]
-    untried: ConversationListItem[]
+    failed: SiteConversationItem[]
+    untried: SiteConversationItem[]
     aborted: boolean
   }> {
-    const failed: ConversationListItem[] = []
-    const untried: ConversationListItem[] = []
+    const failed: SiteConversationItem[] = []
+    const untried: SiteConversationItem[] = []
     let done = 0
     let aborted = false
     await mapConcurrent(
@@ -538,12 +545,12 @@ async function exportItems(
   const failures: Failure[] = [
     ...failedItems.map((i) => ({
       id: i.id,
-      title: i.title ?? '',
+      title: i.title,
       error: '多次重试后仍失败（限流隔离或对话不可用）',
     })),
     ...untriedItems.map((i) => ({
       id: i.id,
-      title: i.title ?? '',
+      title: i.title,
       error: '保护性中止，本次未尝试（下次增量导出会自动补上）',
     })),
   ]
@@ -552,15 +559,16 @@ async function exportItems(
   }
 
   const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')
-  const doneDesc = await sink.close(panel, `chatgpt-export-${kind}-${stamp}.zip`)
+  const doneDesc = await sink.close(panel, `${site.id}-export-${kind}-${stamp}.zip`)
   // 水位线只在产物真正落地后推进：取消/崩溃的运行不记，避免下次增量漏数据
-  saveWatermark(kind, wmDraft)
+  saveWatermark(wmKey(kind), wmDraft)
   panel.setStatus(
     `${safetyAborted ? '保护性中止（失败过多，防止触发服务端限制）。' : '完成：'}` +
       `${list.length - failures.length} 个对话，${doneDesc}` +
       (skipped > 0 ? `（另跳过未变化 ${skipped} 条）` : '') +
       (failures.length ? `，${failures.length} 个失败（见 _failures.json）` : '') +
-      proc.assetSummary(),
+      proc.assetSummary() +
+      throttleNote(),
   )
 }
 
