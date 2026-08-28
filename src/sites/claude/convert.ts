@@ -7,18 +7,34 @@
 import type { AssetRef, IRBlock, IRConversation, IRTurn, SourceLink } from '../../core/ir'
 import { toIso, yamlQuote } from '../../core/render'
 import { artifactDocType, blockKey, replayArtifacts, type ArtifactOp } from './artifacts'
-import type { ClaudeContentBlock, ClaudeConversation, ClaudeMessage } from './types'
+import type {
+  ClaudeContentBlock,
+  ClaudeConversation,
+  ClaudeMessage,
+  ClaudeSandboxFile,
+} from './types'
 
 interface Ctx {
   /** blockKey → 重放成功的 artifact 操作；不在表里的走原始 JSON 兜底 */
   artifacts: Map<string, ArtifactOp>
+  sandboxByPath: Map<string, ClaudeSandboxFile>
+  sandboxByBasename: Map<string, ClaudeSandboxFile>
+  sandboxOutputs: ClaudeSandboxFile[]
+  presentedPaths: Set<string>
+  usedPresentFallback: boolean
+  sandboxUnavailable: boolean
 }
 
-export function conversationToIR(conv: ClaudeConversation, fallbackId = ''): IRConversation {
+export function conversationToIR(
+  conv: ClaudeConversation,
+  fallbackId = '',
+  sandboxFiles: readonly ClaudeSandboxFile[] = [],
+  sandboxUnavailable = false,
+): IRConversation {
   const convId = String(conv.uuid ?? fallbackId)
   const title = (conv.name ?? '').trim() || 'Untitled'
   const messages = linearize(conv)
-  const ctx: Ctx = { artifacts: replayArtifacts(messages) }
+  const ctx = buildContext(messages, sandboxFiles, sandboxUnavailable)
 
   const turns: IRTurn[] = groupTurns(messages).map((t) => ({
     role: t.role,
@@ -174,6 +190,30 @@ function toolUseBlocks(
   const name = str(b.name)
   const input = b.input ?? {}
 
+  if (name === 'present_files') {
+    let files = sandboxFilesForInput(input, ctx)
+    // 新旧 present_files 参数名有差异。识别不到路径时，只在第一次调用回退到
+    // outputs 全集；这仍比静默丢掉网页上明确可下载的文件卡片更忠实。
+    if (files.length === 0 && !ctx.usedPresentFallback) {
+      ctx.usedPresentFallback = true
+      files = ctx.sandboxOutputs
+    }
+    if (files.length > 0) {
+      return [{ kind: 'assetList', refs: files.map(sandboxAssetRef) }]
+    }
+    if (ctx.sandboxUnavailable) {
+      return [{ kind: 'note', text: '*(Claude 生成文件清单获取失败，本次未能下载这些文件)*' }]
+    }
+    return [
+      {
+        kind: 'tool',
+        title: '工具调用 → `present_files`',
+        body: JSON.stringify(input, null, 2),
+        lang: 'json',
+      },
+    ]
+  }
+
   if (name === 'artifacts') {
     const op = ctx.artifacts.get(blockKey(msgUuid, index))
     if (!op) {
@@ -211,6 +251,19 @@ function toolUseBlocks(
 
   if (name === 'create_file' && typeof input['file_text'] === 'string') {
     const path = str(input['path']) || 'file'
+    const sandboxFile = sandboxFileForPath(path, ctx)
+    if (sandboxFile && ctx.presentedPaths.has(sandboxFile.path)) {
+      // 最终文件会由 present_files 生成可下载链接；默认不再把每次 create_file
+      // 的完整中间版本重复塞进 Markdown。打开“工具过程”仍可查看调用参数。
+      return [
+        {
+          kind: 'tool',
+          title: `工具调用 → \`create_file\`（${path}）`,
+          body: JSON.stringify(input, null, 2),
+          lang: 'json',
+        },
+      ]
+    }
     return [
       {
         kind: 'document',
@@ -243,6 +296,124 @@ function toolUseBlocks(
   ]
 }
 
+function buildContext(
+  messages: readonly ClaudeMessage[],
+  sandboxFiles: readonly ClaudeSandboxFile[],
+  sandboxUnavailable: boolean,
+): Ctx {
+  const sandboxByPath = new Map<string, ClaudeSandboxFile>()
+  const sandboxByBasename = new Map<string, ClaudeSandboxFile>()
+  const sandboxOutputs: ClaudeSandboxFile[] = []
+  for (const file of sandboxFiles) {
+    const path = normalizePath(file.path)
+    sandboxByPath.set(path, file)
+    if (path.startsWith('/mnt/user-data/outputs/')) sandboxOutputs.push(file)
+  }
+  // basename 回退优先 outputs：/home/claude/foo 与 outputs/foo 是常见的同一最终文件；
+  // 同名 upload 不应抢走 Claude 生成件。
+  for (const file of [...sandboxFiles].sort((a, b) => outputRank(a.path) - outputRank(b.path))) {
+    const base = basename(file.path)
+    if (base && !sandboxByBasename.has(base)) sandboxByBasename.set(base, file)
+  }
+
+  const provisional: Ctx = {
+    artifacts: replayArtifacts(messages),
+    sandboxByPath,
+    sandboxByBasename,
+    sandboxOutputs,
+    presentedPaths: new Set(),
+    usedPresentFallback: false,
+    sandboxUnavailable,
+  }
+  let sawUnresolvedPresentFiles = false
+  for (const msg of messages) {
+    for (const block of msg.content ?? []) {
+      if (block.type !== 'tool_use' || block.name !== 'present_files') continue
+      const matched = sandboxFilesForInput(block.input ?? {}, provisional)
+      if (matched.length === 0) sawUnresolvedPresentFiles = true
+      for (const file of matched) {
+        provisional.presentedPaths.add(file.path)
+      }
+    }
+  }
+  if (sawUnresolvedPresentFiles) {
+    for (const file of sandboxOutputs) provisional.presentedPaths.add(file.path)
+  }
+  return provisional
+}
+
+function sandboxFilesForInput(input: unknown, ctx: Ctx): ClaudeSandboxFile[] {
+  const paths = deepPathStrings(input)
+  const out: ClaudeSandboxFile[] = []
+  const seen = new Set<string>()
+  for (const path of paths) {
+    const file = sandboxFileForPath(path, ctx)
+    if (file && !seen.has(file.path)) {
+      seen.add(file.path)
+      out.push(file)
+    }
+  }
+  return out
+}
+
+function sandboxFileForPath(path: string, ctx: Ctx): ClaudeSandboxFile | undefined {
+  const normalized = normalizePath(path)
+  return ctx.sandboxByPath.get(normalized) ?? ctx.sandboxByBasename.get(basename(normalized))
+}
+
+function deepPathStrings(value: unknown, out: string[] = []): string[] {
+  if (typeof value === 'string') {
+    if (/\/(?:mnt\/user-data\/(?:outputs|uploads)|home\/claude)\//.test(normalizePath(value))) {
+      out.push(value)
+    }
+    return out
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) deepPathStrings(item, out)
+  } else if (value && typeof value === 'object') {
+    for (const item of Object.values(value as Record<string, unknown>)) deepPathStrings(item, out)
+  }
+  return out
+}
+
+function sandboxAssetRef(file: ClaudeSandboxFile): AssetRef {
+  const name = basename(file.path) || 'file'
+  const mime = str(file.content_type)
+  return {
+    fileId: `wiggle-${hashPath(file.path)}`,
+    kind: isImageFile(name, mime) ? 'image' : 'file',
+    name,
+    url: file.download_url,
+    sizeBytes: typeof file.size === 'number' ? file.size : undefined,
+    mime: mime || undefined,
+  }
+}
+
+function isImageFile(name: string, mime: string): boolean {
+  return mime.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(name)
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/{2,}/g, '/')
+}
+
+function basename(path: string): string {
+  return normalizePath(path).split('/').filter(Boolean).pop() ?? ''
+}
+
+function outputRank(path: string): number {
+  return normalizePath(path).startsWith('/mnt/user-data/outputs/') ? 0 : 1
+}
+
+function hashPath(path: string): string {
+  let hash = 0x811c9dc5
+  for (const ch of normalizePath(path)) {
+    hash ^= ch.charCodeAt(0)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
 function toolResultBlock(b: ClaudeContentBlock): IRBlock {
   const isText = typeof b.content === 'string'
   return {
@@ -255,7 +426,8 @@ function toolResultBlock(b: ClaudeContentBlock): IRBlock {
 }
 
 /**
- * 附件两处来源，按各自实际提供的东西处理：
+ * 消息内普通附件的两处来源，按各自实际提供的东西处理。Claude 生成件另由
+ * present_files + 会话级 Wiggle 沙箱清单在 toolUseBlocks 中生成链接：
  *   files[]       —— 上传的原件。图片有 preview_url（内联嵌入），文档有
  *                    document_asset.url（列为链接），blob 类没有可用地址（留说明）
  *   attachments[] —— 文本抽取件（.md/.docx/…）。没有地址，但正文就在

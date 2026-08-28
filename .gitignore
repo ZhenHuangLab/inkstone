@@ -1,4 +1,5 @@
 node_modules/
 dist/
+/cases/
 *.local
 .DS_Store

@@ -18,7 +18,12 @@ import {
   type Fetcher,
   type ThrottleConfig,
 } from '../../core/fetcher'
-import type { ClaudeConversation, ClaudeConversationListItem, ClaudeOrganization } from './types'
+import type {
+  ClaudeConversation,
+  ClaudeConversationListItem,
+  ClaudeOrganization,
+  ClaudeSandboxFile,
+} from './types'
 
 export const CLAUDE_THROTTLE: ThrottleConfig = {
   spacingBaseMs: 1500,
@@ -75,6 +80,38 @@ export async function fetchConversation(
   )
   const res = await fetcher.request(url, { headers: { Accept: 'application/json' } }, cancel)
   return (await res.json()) as ClaudeConversation
+}
+
+/**
+ * 会话沙箱清单：用户上传件与 Claude 生成的最终文件都在这里。
+ * 注意端点是 conversations，不是主对话接口使用的 chat_conversations。
+ */
+export async function listSandboxFiles(
+  orgId: string,
+  conversationId: string,
+  cancel?: CancelToken,
+): Promise<ClaudeSandboxFile[]> {
+  const listUrl = api(
+    `/api/organizations/${orgId}/conversations/${conversationId}/wiggle/list-files?prefix=`,
+  )
+  const res = await fetcher.request(listUrl, { headers: { Accept: 'application/json' } }, cancel)
+  const data: unknown = await res.json()
+  if (!data || typeof data !== 'object' || !Array.isArray((data as { files_metadata?: unknown }).files_metadata)) {
+    throw new Error('Claude 沙箱文件清单结构已变化')
+  }
+  const files = (data as { files_metadata: unknown[] }).files_metadata
+
+  return files.flatMap((item): ClaudeSandboxFile[] => {
+    if (!item || typeof item !== 'object') return []
+    const raw = item as Record<string, unknown>
+    if (typeof raw['path'] !== 'string' || raw['path'] === '') return []
+    const path = raw['path']
+    const downloadUrl = api(
+      `/api/organizations/${orgId}/conversations/${conversationId}/wiggle/download-file` +
+        `?path=${encodeURIComponent(path)}`,
+    )
+    return [{ ...(raw as Omit<ClaudeSandboxFile, 'download_url'>), path, download_url: downloadUrl }]
+  })
 }
 
 // ——— 以下是批量导出的地基，当前版本的 UI 不暴露 ———

@@ -1,5 +1,6 @@
 import { sanitizeSubdir } from './core/render'
 import type { SiteUi } from './sites'
+import { computeFabPlacement } from './ui-position'
 
 export type ExportFormat = 'markdown' | 'json'
 export type ExportScope = 'current' | 'all' | 'selection'
@@ -170,7 +171,7 @@ const STYLE = `
      底色照抄页面 translucent-surface（透明 + blur(24px) 液态玻璃，无阴影），
      悬浮才出圆角矩形底色；无高光扫过 */
   :host([data-pos="header"]) .fab {
-    width: 36px; height: 36px; border-radius: 8px;
+    width: var(--header-fab-size, 36px); height: var(--header-fab-size, 36px); border-radius: 8px;
     background: transparent; border-color: transparent; box-shadow: none;
     -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
   }
@@ -196,10 +197,17 @@ const STYLE = `
     max-height: min(72vh, calc(100vh - var(--fab-bottom, 88px) - 72px));
     max-width: calc(100vw - 32px);
     transform-origin: 100% 100%;
-    transition: right .25s var(--ease), bottom .25s var(--ease);
+    transition: left .25s var(--ease), right .25s var(--ease), bottom .25s var(--ease);
   }
   .panel.open { display: block; animation: rise .22s var(--ease); }
   @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+  /* composer 模式优先从按钮向右上展开；右侧空间不足时贴视口右缘，少盖住输入区。 */
+  :host([data-pos="composer"]) .panel {
+    left: var(--panel-left, 16px); right: auto;
+    width: min(304px, calc(100vw - var(--panel-left, 16px) - 16px));
+    transform-origin: 50% 100%;
+  }
+  :host([data-pos="composer"]) .adv .row { flex-wrap: wrap; }
   /* header 模式：面板从按钮下方展开 */
   :host([data-pos="header"]) .panel {
     bottom: auto; top: var(--panel-top, 56px);
@@ -553,6 +561,28 @@ export function mountPanel(cb: PanelCallbacks): void {
   `
   root.append(fab, panel)
 
+  // Claude 会在 document 上监听交互，并把 shadow DOM 事件的宿主误判成页面本身。
+  // 在面板内部冒泡阶段截断可保留控件默认行为与目标监听器，同时避免点击、数字输入、
+  // 粘贴或 focusin 被 Claude 接走并落进聊天编辑器。
+  for (const type of [
+    'pointerdown',
+    'mousedown',
+    'mouseup',
+    'click',
+    'dblclick',
+    'focusin',
+    'focusout',
+    'keydown',
+    'keypress',
+    'keyup',
+    'beforeinput',
+    'input',
+    'change',
+    'paste',
+  ] as const) {
+    panel.addEventListener(type, (event) => event.stopPropagation())
+  }
+
   // FAB 锚定系统，双模式：
   //   composer（默认）：贴输入框右侧垂直居中，挤不下退到输入框正上方（玻璃圆钮）；
   //   header：贴顶栏 Share 按钮左侧（没有 Share 时贴 header 动作区），面板向下展开（幽灵钮）。
@@ -562,61 +592,59 @@ export function mountPanel(cb: PanelCallbacks): void {
   // getBoundingClientRect，样式仅在数值变化时写入。
   let mode: 'composer' | 'header' = cb.settings.values.fabPos
   host.dataset['pos'] = mode
-  const fabSize = () => (mode === 'header' ? 36 : 44)
+  // Claude 顶栏原生动作实测为 28px；ChatGPT 保持原有 36px。
+  const headerFabSize = cb.site.id === 'claude' ? 28 : 36
+  host.style.setProperty('--header-fab-size', `${headerFabSize}px`)
+  const fabSize = () => (mode === 'header' ? headerFabSize : 44)
   const fabGap = () => (mode === 'header' ? 8 : 12)
   let curRight = -1
   let curBottom = -1
   let curPanelTop = -1
+  let curPanelLeft = -1
   const findAnchor = (): HTMLElement | null =>
     mode === 'header' ? cb.siteUi.headerAnchor() : cb.siteUi.composerAnchor()
   let anchor: HTMLElement | null = null
-  const syncPos = (): void => {
-    if (!anchor?.isConnected) return // 没有锚点：位置保持原样，藏与不藏由 rebindAnchor 决定
+  const syncPos = (): boolean => {
+    if (!anchor?.isConnected) return false // 没有锚点：位置保持原样，藏与不藏由 rebindAnchor 决定
     const r = anchor.getBoundingClientRect()
-    if (r.height <= 0) return
-    const size = fabSize()
-    let right: number
-    let bottom: number
-    if (mode === 'header') {
-      if (r.top < 0) return
-      right = Math.round(window.innerWidth - r.left + fabGap())
-      bottom = Math.round(window.innerHeight - r.bottom + (r.height - size) / 2)
-      const panelTop = Math.round(r.bottom + 10)
-      if (panelTop !== curPanelTop) {
-        curPanelTop = panelTop
-        host.style.setProperty('--panel-top', `${panelTop}px`)
-      }
-    } else {
-      if (r.bottom > window.innerHeight) return
-      const beside = Math.round(window.innerWidth - r.right - fabGap() - size)
-      if (beside >= 8) {
-        right = beside
-        bottom = Math.round(Math.max(8, window.innerHeight - r.bottom + (r.height - size) / 2))
-      } else {
-        right = 20
-        bottom = Math.round(Math.min(window.innerHeight - 60, window.innerHeight - r.top + fabGap()))
-      }
+    const placement = computeFabPlacement(
+      mode,
+      r,
+      { width: window.innerWidth, height: window.innerHeight },
+      fabSize(),
+      fabGap(),
+    )
+    if (!placement) return false
+    if (placement.panelTop != null && placement.panelTop !== curPanelTop) {
+      curPanelTop = placement.panelTop
+      host.style.setProperty('--panel-top', `${placement.panelTop}px`)
     }
-    if (right !== curRight) {
-      curRight = right
-      host.style.setProperty('--fab-right', `${right}px`)
+    if (placement.panelLeft != null && placement.panelLeft !== curPanelLeft) {
+      curPanelLeft = placement.panelLeft
+      host.style.setProperty('--panel-left', `${placement.panelLeft}px`)
     }
-    if (bottom !== curBottom) {
-      curBottom = bottom
-      host.style.setProperty('--fab-bottom', `${bottom}px`)
+    if (placement.right !== curRight) {
+      curRight = placement.right
+      host.style.setProperty('--fab-right', `${placement.right}px`)
     }
+    if (placement.bottom !== curBottom) {
+      curBottom = placement.bottom
+      host.style.setProperty('--fab-bottom', `${placement.bottom}px`)
+    }
+    return true
+  }
+  const closePanel = (): void => {
+    panel.classList.remove('open')
+    fab.classList.remove('open')
+    fab.setAttribute('aria-expanded', 'false')
   }
   const hideFab = (): void => {
     fab.classList.remove('in')
-    if (panel.classList.contains('open')) {
-      panel.classList.remove('open')
-      fab.classList.remove('open')
-      fab.setAttribute('aria-expanded', 'false')
-    }
+    closePanel()
   }
   const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(syncPos)
   let anchorMissing = 0
-  const rebindAnchor = (): void => {
+  const rebindAnchor = (): boolean => {
     const c = findAnchor()
     if (c !== anchor) {
       ro?.disconnect()
@@ -625,10 +653,11 @@ export function mountPanel(cb: PanelCallbacks): void {
     }
     if (anchor?.isConnected) {
       anchorMissing = 0
-      syncPos()
+      return syncPos()
     } else if (++anchorMissing >= 2) {
       hideFab() // 连续两轮（约 4s）没有锚点：整个入口隐藏
     }
+    return false
   }
   // 找到输入框、且位置连续两拍（250ms）稳定后才现身（.in)——SPA 水合期间 composer
   // 可能先出现在错误位置（居中/侧栏未挂载），立刻现身会被用户看到「先落错位再闪跳」。
@@ -638,9 +667,9 @@ export function mountPanel(cb: PanelCallbacks): void {
   let bootKey = ''
   let bootStable = 0
   const boot = (): void => {
-    rebindAnchor()
+    const positioned = rebindAnchor()
     const key = `${curRight},${curBottom}`
-    bootStable = anchor && key === bootKey ? bootStable + 1 : anchor ? 1 : 0
+    bootStable = positioned && key === bootKey ? bootStable + 1 : positioned ? 1 : 0
     bootKey = key
     if (bootStable >= 2) {
       bootDone = true
@@ -658,8 +687,8 @@ export function mountPanel(cb: PanelCallbacks): void {
   let tick = 0
   setInterval(() => {
     if (++tick % 4 === 0) {
-      rebindAnchor()
-      if (bootDone && anchor?.isConnected && curRight >= 0 && !fab.classList.contains('in')) {
+      const positioned = rebindAnchor()
+      if (bootDone && positioned && !fab.classList.contains('in')) {
         detectAccent(true)
         fab.classList.add('in')
       }
@@ -710,9 +739,23 @@ export function mountPanel(cb: PanelCallbacks): void {
   fabPosEl.value = mode
   fabPosEl.addEventListener('change', () => {
     mode = fabPosEl.value === 'header' ? 'header' : 'composer'
+    // select 位于展开面板内：换位时先正常收起，否则面板可能移出视口、按钮却残留
+    // open/蓝底/向下箭头状态。位置缓存也必须清空，确保双向切换都立即写入新坐标。
+    closePanel()
+    fab.classList.remove('in')
+    ro?.disconnect()
+    anchor = null
+    curRight = -1
+    curBottom = -1
+    curPanelTop = -1
+    curPanelLeft = -1
+    host.style.removeProperty('--fab-right')
+    host.style.removeProperty('--fab-bottom')
+    host.style.removeProperty('--panel-top')
+    host.style.removeProperty('--panel-left')
     host.dataset['pos'] = mode
     cb.settings.onSettingsChange({ fabPos: mode })
-    rebindAnchor()
+    if (rebindAnchor()) fab.classList.add('in')
   })
 
   const linkStyleEl = panel.querySelector<HTMLSelectElement>('select[data-opt="linkStyle"]')!

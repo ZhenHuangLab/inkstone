@@ -42,7 +42,7 @@
    - `thoughts`（推理模型思维链）→ 折叠 callout，默认带、可关
    - Canvas textdoc → MVP 整块嵌入，后续做 patch 重放还原终稿
    - **未知类型 → 原始 JSON 塞进折叠 callout，永不静默丢内容**
-6. **附件管道**：`file-service://` 与 `sediment://` 指针 → files 接口下载 → 笔记同目录下的附件子文件夹（默认 `conversations/attachments/`）→ 链接改写（wikilink `![[...]]` / 标准相对链接，可配；链接相对 .md 严格成立）；下载失败留占位说明并在完成文案里报数。笔记/附件子文件夹名均可设置（可 `a/b` 嵌套、可留空；`sanitizeSubdir` 逐段净化防逃逸），油猴设置面板与 CLI `--notes-dir`/`--attachments-dir` 同规则。⚠️ 直写 vault 时注意 macOS 大小写不敏感：目录名撞上 vault 已有目录（如 `Attachments`）会直接写进去——2026-07-10 排查的"附件丢失"即此叠加 fast-note-sync 云预览删本地所致，非代码 bug。
+6. **附件管道**：`file-service://` 与 `sediment://` 指针 → files 接口下载 → 笔记同目录下的附件子文件夹（默认 `conversations/attachments/`）→ 链接改写（wikilink `![[...]]` / 标准相对链接，可配；标准 Markdown 路径相对当前 `.md`，Obsidian Wikilink 的目录路径相对 vault 根）；下载失败留占位说明并在完成文案里报数。笔记/附件子文件夹名均可设置（可 `a/b` 嵌套、可留空；`sanitizeSubdir` 逐段净化防逃逸），油猴设置面板与 CLI `--notes-dir`/`--attachments-dir` 同规则。⚠️ 直写 vault 时注意 macOS 大小写不敏感：目录名撞上 vault 已有目录（如 `Attachments`）会直接写进去——2026-07-10 排查的"附件丢失"即此叠加 fast-note-sync 云预览删本地所致，非代码 bug。
 7. **Frontmatter**：title、chat_id、url（`chatgpt.com/c/<id>`）、created、updated、model（实际生成消息的 model_slug，最后一条为准；多模型另列 models）、tags —— 配 Dataview 即全库索引。
 8. **文件名**：`标题-短id.md` 防重名（无空格/波浪线，非法字符与空白归一为 `-`），id 保证增量覆盖稳定。
 
@@ -141,8 +141,15 @@ inkstone/
     服务端要求的最长等待——未知站点的节奏只能靠实测看清，先让它可见再谈调参。
   - **待实测**：`docs/claude-probe.js` 可直接粘进 claude.ai 控制台，打印字段骨架
     （不打印对话内容）并做一次 ≤8 请求的保守限流试探。清单见可行性文档第五节：
-    分页是否生效、thinking 字段名、citations 挂载形态、附件地址能否直取字节、
-    公式定界符、Projects 字段名、FAB 锚点选择器。
+    分页是否生效、thinking 字段名、citations 挂载形态、普通附件地址能否直取字节、
+    公式定界符、Projects 字段名。FAB 锚点已在 2026-08-28 的真实会话页确认：
+    顶栏动作为 `[data-testid="wiggle-controls-actions-group"]`（需锚定整个组的左边界，
+    不能只锚定 Share，否则会盖住 Files），输入框为
+    `[data-testid="chat-input"][contenteditable="true"]`。同一轮实测还确认 Claude 的
+    图片 `preview_url` 可能把上传 PNG 转码为 WebP，附件落盘扩展名必须服从响应 MIME。
+    生成文件卡片则不在消息的 `files[]`：`present_files` 给出展示路径，实际文件需先从
+    `.../conversations/{id}/wiggle/list-files` 取清单，再经 `wiggle/download-file` 下载。
+    默认 Markdown 只链接最终沙箱文件，不再重复嵌入每次 `create_file` 的完整中间版本。
   - **未做**：Claude 的行内引用锚定（citations 的字符级定位字段未实测，首版只把
     来源汇总进文末 Sources，正文一字不动）；Claude 官方导出 zip 的离线 CLI 通道。
 

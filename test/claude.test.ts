@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { renderConversation } from '../src/core/render'
 import { replayArtifacts } from '../src/sites/claude/artifacts'
 import { conversationToIR, linearize } from '../src/sites/claude/convert'
-import type { ClaudeConversation, ClaudeMessage } from '../src/sites/claude/types'
+import type { ClaudeConversation, ClaudeMessage, ClaudeSandboxFile } from '../src/sites/claude/types'
 import fixtureJson from './fixtures/claude-basic.json'
 
 const fixture = fixtureJson as unknown as ClaudeConversation
@@ -237,6 +237,89 @@ describe('附件', () => {
     conv.chat_messages![0]!.files = [{ file_kind: 'blob', file_name: '录音.m4a' }]
     const out = md(conv)
     expect(out).toContain('*(附件：录音.m4a · blob — 无可下载地址)*')
+  })
+
+  test('present_files 输出沙箱文件链接，并隐藏重复的 create_file 中间版本', () => {
+    const conv = withBlocks([
+      {
+        type: 'tool_use',
+        name: 'create_file',
+        input: { path: '/home/claude/certificate_scatter.py', file_text: 'FIRST VERSION' },
+      },
+      {
+        type: 'tool_use',
+        name: 'create_file',
+        input: { path: '/home/claude/certificate_scatter.py', file_text: 'FINAL VERSION' },
+      },
+      {
+        type: 'tool_use',
+        name: 'present_files',
+        input: {
+          files: [
+            { file_path: '/mnt/user-data/outputs/certificate_scatter.py' },
+            { file_path: '/mnt/user-data/outputs/demo.png' },
+          ],
+        },
+      },
+    ])
+    const sandbox: ClaudeSandboxFile[] = [
+      {
+        path: '/mnt/user-data/outputs/certificate_scatter.py',
+        size: 1200,
+        content_type: 'text/plain',
+        download_url: '/api/wiggle/download?path=certificate_scatter.py',
+      },
+      {
+        path: '/mnt/user-data/outputs/demo.png',
+        size: 2400,
+        content_type: 'image/png',
+        download_url: '/api/wiggle/download?path=demo.png',
+      },
+    ]
+
+    const rendered = renderConversation(conversationToIR(conv, '', sandbox))
+    expect(rendered.markdown).not.toContain('FIRST VERSION')
+    expect(rendered.markdown).not.toContain('FINAL VERSION')
+    expect(rendered.assets.map((a) => a.name)).toEqual(['certificate_scatter.py', 'demo.png'])
+    expect(rendered.assets.find((a) => a.name === 'demo.png')?.kind).toBe('image')
+    expect(rendered.assets.find((a) => a.name === 'certificate_scatter.py')?.url).toContain('/api/wiggle/download')
+  })
+
+  test('present_files 参数无法识别时只回退一次 outputs 全集', () => {
+    const conv = withBlocks([
+      { type: 'tool_use', name: 'present_files', input: { future_shape: true } },
+      { type: 'tool_use', name: 'present_files', input: { future_shape: true } },
+    ])
+    const sandbox: ClaudeSandboxFile[] = [
+      {
+        path: '/mnt/user-data/outputs/result.csv',
+        size: 10,
+        content_type: 'text/plain',
+        download_url: '/api/wiggle/download?path=result.csv',
+      },
+      {
+        path: '/mnt/user-data/uploads/input.csv',
+        size: 10,
+        content_type: 'text/csv',
+        download_url: '/api/wiggle/download?path=input.csv',
+      },
+    ]
+    const rendered = renderConversation(conversationToIR(conv, '', sandbox))
+    expect(rendered.assets.map((a) => a.name)).toEqual(['result.csv'])
+  })
+
+  test('沙箱清单请求失败时正文仍可导出，并在文件卡片原位说明', () => {
+    const conv = withBlocks([
+      { type: 'text', text: '正文保留' },
+      {
+        type: 'tool_use',
+        name: 'present_files',
+        input: { filepaths: ['/mnt/user-data/outputs/result.csv'] },
+      },
+    ])
+    const out = renderConversation(conversationToIR(conv, '', [], true)).markdown
+    expect(out).toContain('正文保留')
+    expect(out).toContain('Claude 生成文件清单获取失败，本次未能下载这些文件')
   })
 })
 

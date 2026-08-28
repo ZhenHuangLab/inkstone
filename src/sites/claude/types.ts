@@ -37,7 +37,7 @@ export interface ClaudeContentBlock {
   thinking?: string | null
   /** thinking 块的分段摘要 [待测] */
   summaries?: Array<{ summary?: string | null; [k: string]: unknown }> | null
-  /** tool_use 的工具名：artifacts / create_file / visualize:show_widget / web_search … */
+  /** tool_use 的工具名：artifacts / create_file / present_files / visualize:show_widget / web_search … */
   name?: string | null
   input?: Record<string, unknown> | null
   /** tool_result 的载荷，形态随工具而异 */
@@ -103,4 +103,22 @@ export interface ClaudeConversation {
   project_uuid?: string | null
   project?: { uuid?: string | null; name?: string | null } | null
   [k: string]: unknown
+}
+
+/** Claude 会话级 Wiggle 沙箱里的文件。 */
+export interface ClaudeSandboxFile {
+  path: string
+  size?: number | null
+  content_type?: string | null
+  created_at?: string | null
+  custom_metadata?: Record<string, unknown> | null
+  /** 由 API 层根据 org / conversation / path 生成的同源下载地址。 */
+  download_url: string
+  [k: string]: unknown
+}
+
+export interface ClaudeIRContext {
+  sandboxFiles: ClaudeSandboxFile[]
+  /** 清单请求失败时降级导出正文，并在 present_files 位置留明确说明。 */
+  sandboxUnavailable?: boolean
 }

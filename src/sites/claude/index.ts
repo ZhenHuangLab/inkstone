@@ -5,11 +5,12 @@ import {
   currentConversationId,
   fetchBinary,
   fetchConversation,
+  listSandboxFiles,
   resolveOrgId,
   throttleStats,
 } from './api'
 import { conversationToIR } from './convert'
-import type { ClaudeConversation } from './types'
+import type { ClaudeConversation, ClaudeIRContext } from './types'
 
 export const claudeAdapter: SiteAdapter = {
   id: 'claude',
@@ -26,7 +27,25 @@ export const claudeAdapter: SiteAdapter = {
 
   fetchRaw: (session, id, cancel) => fetchConversation(session, id, cancel),
 
-  toIR: (raw, fallbackId) => conversationToIR(raw as ClaudeConversation, fallbackId),
+  fetchIRContext: async (session, id, raw, cancel): Promise<ClaudeIRContext> => {
+    // 普通对话没有 present_files，没必要额外打一遍沙箱接口。
+    if (!hasPresentFiles(raw as ClaudeConversation)) return { sandboxFiles: [] }
+    try {
+      return { sandboxFiles: await listSandboxFiles(session, id, cancel) }
+    } catch (error) {
+      if (cancel?.cancelled) throw error
+      // 附件发现失败不应吞掉整篇正文；转换层会在文件卡片原位留下说明。
+      return { sandboxFiles: [], sandboxUnavailable: true }
+    }
+  },
+
+  toIR: (raw, fallbackId, context) =>
+    conversationToIR(
+      raw as ClaudeConversation,
+      fallbackId,
+      (context as ClaudeIRContext | undefined)?.sandboxFiles ?? [],
+      (context as ClaudeIRContext | undefined)?.sandboxUnavailable === true,
+    ),
 
   async fetchAsset(
     _session: string,
@@ -34,7 +53,7 @@ export const claudeAdapter: SiteAdapter = {
     cancel?: CancelToken,
     maxBytes?: number,
   ): Promise<AssetPayload> {
-    // Claude 的附件地址就在消息里，同源、登录态直接可取，不需要先换签名 URL
+    // Claude 的普通附件与 Wiggle 下载地址都是同源、登录态直接可取，不需要换签名 URL
     if (!ref.url) throw new Error(`附件 ${ref.name ?? ref.fileId} 没有可下载地址`)
     const { bytes, contentType } = await fetchBinary(ref.url, cancel, maxBytes)
     return { bytes, filename: null, contentType }
@@ -43,15 +62,23 @@ export const claudeAdapter: SiteAdapter = {
   throttleStats,
 
   ui: {
-    // [待测] 以下选择器需要在真实页面上确认。找不到锚点时 FAB 不显示（既有防御），
-    // 所以候选写宽是安全的：宁可多试几个，也不要挂在会被本地化的 aria-label 文案上。
+    // 2026-08-28 真实会话页实测：Files + Share 外层是 actions-group。锚定整个组的
+    // 左边界才不会盖住 Files；旧选择器继续留作回退，兼容 Claude 的灰度发布。
     headerAnchor: () =>
-      (document.querySelector('[data-testid="share-button"]') ??
+      (document.querySelector('[data-testid="wiggle-controls-actions-group"]') ??
+        document.querySelector('[data-testid="wiggle-controls-actions"]') ??
+        document.querySelector('[data-testid="wiggle-controls-actions-share"]') ??
+        document.querySelector('[data-testid="share-button"]') ??
         document.querySelector('[data-testid="chat-menu-trigger"]') ??
-        document.querySelector('header button[aria-haspopup="menu"]')) as HTMLElement | null,
+        document.querySelector('header button[aria-haspopup="menu"]') ??
+        document.querySelector('[data-testid="chat-title-split"]')) as HTMLElement | null,
 
     composerAnchor: () =>
-      (document.querySelector('fieldset div[contenteditable="true"]')?.closest('fieldset') ??
+      ((() => {
+        const editor = document.querySelector('[data-testid="chat-input"][contenteditable="true"]')
+        return editor?.closest('.rounded-composer') ?? editor?.closest('fieldset')
+      })() ??
+        document.querySelector('fieldset div[contenteditable="true"]')?.closest('fieldset') ??
         document.querySelector('div[contenteditable="true"][role="textbox"]')?.closest('fieldset') ??
         document.querySelector('div.ProseMirror[contenteditable="true"]')?.parentElement ??
         null) as HTMLElement | null,
@@ -80,4 +107,10 @@ export const claudeAdapter: SiteAdapter = {
       return null
     },
   },
+}
+
+function hasPresentFiles(conv: ClaudeConversation): boolean {
+  return (conv.chat_messages ?? []).some((msg) =>
+    (msg.content ?? []).some((block) => block.type === 'tool_use' && block.name === 'present_files'),
+  )
 }

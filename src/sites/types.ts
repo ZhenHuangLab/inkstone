@@ -72,7 +72,14 @@ export interface SiteAdapter {
   /** 原始 JSON（raw 导出与 IR 转换共用同一次抓取） */
   fetchRaw(session: string, id: string, cancel?: CancelToken): Promise<unknown>
   /** 原始 JSON → IR */
-  toIR(raw: unknown, fallbackId: string): IRConversation
+  toIR(raw: unknown, fallbackId: string, context?: unknown): IRConversation
+  /** Markdown 转换前需要额外拉取的站点数据（例如 Claude 会话沙箱文件清单）。 */
+  fetchIRContext?(
+    session: string,
+    id: string,
+    raw: unknown,
+    cancel?: CancelToken,
+  ): Promise<unknown>
   /** 取附件字节 */
   fetchAsset(
     session: string,

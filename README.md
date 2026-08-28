@@ -40,7 +40,7 @@ Inkstone runs inside the page and fetches conversations through the same backend
 | Incremental sync | ✅ | ⏳ not yet enabled |
 | Rich documents | Canvas patch replay | Artifact fold-up to final version |
 | Thoughts / tool traces | ✅ opt-in | ✅ opt-in |
-| Attachments | images and files downloaded | images downloaded, documents linked, text extractions inlined |
+| Attachments | images and files downloaded | images, documents, and generated files downloaded; text extractions inlined |
 
 **Why no batch export on Claude yet?** It isn't missing, it's switched off. The pager,
 watermark, concurrency pool and protective abort are all in place and unit-tested — but

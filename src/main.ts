@@ -21,6 +21,7 @@ import {
   type SitePager,
 } from './sites'
 import { downloadBlob, makeZip, strToU8, type ZipEntries } from './output/zip'
+import { assetFileName, assetReferencePath } from './output/naming'
 import {
   acquireVaultDir,
   forgetVaultDir,
@@ -303,10 +304,10 @@ function createProcessor(
       try {
         const { bytes, filename, contentType } = await site.fetchAsset(session, a, cancel, cap)
         const name = assetFileName(a, filename, contentType)
-        // 链接相对 .md 所在目录，落盘再套上笔记目录前缀
+        // 文件落在笔记目录下；标准 Markdown 用相对笔记路径，Wikilink 用 vault 根路径。
         const linkPath = `${attachPrefix}${a.fileId.slice(-8)}-${name}`
         await sink.put(`${notesPrefix}${linkPath}`, bytes, { precompressed: true })
-        replacement = assetLink(opts.linkStyle, linkPath, {
+        replacement = assetLink(opts.linkStyle, assetReferencePath(opts.linkStyle, notesPrefix, linkPath), {
           embed: a.kind === 'image',
           label: a.kind === 'image' ? undefined : (a.name ?? name),
         })
@@ -344,7 +345,10 @@ function createProcessor(
       await sink.put(path, strToU8(JSON.stringify(raw, null, 2)))
       return { path }
     }
-    const { markdown, title, assets } = renderConversation(site.toIR(raw, item.id), {
+    const irContext = site.fetchIRContext
+      ? await site.fetchIRContext(session, item.id, raw, cancel)
+      : undefined
+    const { markdown, title, assets } = renderConversation(site.toIR(raw, item.id, irContext), {
       thoughts: opts.thoughts,
       toolTraces: opts.toolTraces,
       headingMode: opts.headingMode,
@@ -570,26 +574,6 @@ async function exportItems(
       proc.assetSummary() +
       throttleNote(),
   )
-}
-
-const EXT_BY_MIME: Record<string, string> = {
-  'image/png': '.png',
-  'image/webp': '.webp',
-  'image/jpeg': '.jpg',
-  'image/gif': '.gif',
-}
-
-function assetFileName(a: AssetRef, downloadName: string | null, contentType: string | null): string {
-  const raw = sanitizeName(downloadName ?? a.name ?? '')
-  // 截断只砍主名，扩展名要保住
-  const ext = /\.[A-Za-z0-9]{1,8}$/.exec(raw)?.[0] ?? ''
-  const base = (ext ? raw.slice(0, -ext.length) : raw).slice(0, 60).trim()
-  let name = (base || (a.kind === 'image' ? 'image' : 'file')) + ext
-  if (!/\.[A-Za-z0-9]{1,8}$/.test(name)) {
-    const mimeExt = EXT_BY_MIME[(contentType ?? '').split(';')[0]!.trim()]
-    if (mimeExt) name += mimeExt
-  }
-  return name
 }
 
 function fmtSize(bytes: number): string {
