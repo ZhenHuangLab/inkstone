@@ -69,9 +69,9 @@ Inkstone runs inside chatgpt.com and fetches conversations through the same back
 
 ### Projects
 
-Conversations inside ChatGPT **Projects** are covered by every scope. The main conversation-list endpoint only returns the flat sidebar "Chats" list, so Inkstone additionally walks each project's own conversation list and merges the two, deduplicated by id. Project conversations get a `project:` frontmatter field and a `chatgpt.com/g/<gizmo-id>/c/<id>` URL, and are labelled with the project name in the multi-select list.
+Conversations inside ChatGPT **Projects** are covered by every scope. The main conversation-list endpoint only returns the flat sidebar "Chats" list, so Inkstone treats Chats and every project as separate paged streams and k-way merges them by `update_time` — one list in true recency order, deduplicated by id. Project conversations get a `project:` frontmatter field and a `chatgpt.com/g/<gizmo-id>/c/<id>` URL, and are labelled with the project name in the multi-select list.
 
-Since the flat list can run to hundreds of entries, the multi-select list has a **source** dropdown — All / Chats / one specific project — so a project's conversations are one click away instead of a long scroll.
+The multi-select list also has a **source** dropdown — All / Chats / one specific project — so a single project's conversations are one click away instead of a scroll through everything.
 
 ### Incremental sync
 

@@ -69,9 +69,9 @@ Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backen
 
 ### Projects（项目）
 
-Projects 里的对话在「当前 / 全部 / 所选」三种范围下都能导出。主列表接口只返回侧栏「Chats」那份平铺列表，所以 Inkstone 会额外逐个翻每个 project 自己的会话列表，再按 id 合并去重。project 对话的 frontmatter 多一个 `project:` 字段、`url` 带上 `/g/<gizmo-id>` 段，多选列表里也会标出所属项目名。
+Projects 里的对话在「当前 / 全部 / 所选」三种范围下都能导出。主列表接口只返回侧栏「Chats」那份平铺列表，所以 Inkstone 把主列表和每个 project 各当成一条分页流，按 `update_time` 做 k 路归并——一条真正按时间倒序、按 id 去重的列表。project 对话的 frontmatter 多一个 `project:` 字段、`url` 带上 `/g/<gizmo-id>` 段，多选列表里也会标出所属项目名。
 
-平铺列表动辄几百条，所以多选列表顶部有个「来源」下拉——全部 / 主列表 / 单个 project，选中某个项目就只拉它的会话，不用一路下滑。
+多选列表顶部还有个「来源」下拉——全部 / 主列表 / 单个 project，只想要某个项目时一点就到，不用在全量列表里找。
 
 ### 增量同步
 

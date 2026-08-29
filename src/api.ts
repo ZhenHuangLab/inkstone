@@ -8,7 +8,7 @@ import type {
   SessionResponse,
 } from './types'
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
@@ -30,7 +30,7 @@ export interface CancelToken {
 }
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
-export const jitter = (base: number, spread = base): number => base + Math.random() * spread
+const jitter = (base: number, spread = base): number => base + Math.random() * spread
 
 export function ensureAlive(cancel?: CancelToken): void {
   if (cancel?.cancelled) throw new CancelledError()
@@ -123,7 +123,7 @@ export async function getAccessToken(cancel?: CancelToken): Promise<string> {
 
 const auth = (token: string) => ({ Authorization: `Bearer ${token}` })
 
-export async function listConversationsPage(
+async function listConversationsPage(
   token: string,
   offset: number,
   limit: number,
@@ -147,8 +147,19 @@ const projectNames = new Map<string, string>()
 export const projectNameOf = (gizmoId: string | null | undefined): string | undefined =>
   gizmoId ? projectNames.get(gizmoId) : undefined
 
+// 面板打开时「来源」下拉与归并分页器会几乎同时要这份列表，并发的合成一次请求；
+// 只合并「正在飞」的，不缓存已完成的结果，避免新建项目后拉到陈数据
+let projectsInFlight: Promise<ProjectInfo[]> | null = null
+
 /** 拉全部 project（顺带填好 gizmo_id → 名字的映射）。 */
-export async function listProjects(token: string, cancel?: CancelToken): Promise<ProjectInfo[]> {
+export function listProjects(token: string, cancel?: CancelToken): Promise<ProjectInfo[]> {
+  projectsInFlight ??= fetchProjects(token, cancel).finally(() => {
+    projectsInFlight = null
+  })
+  return projectsInFlight
+}
+
+async function fetchProjects(token: string, cancel?: CancelToken): Promise<ProjectInfo[]> {
   const out: ProjectInfo[] = []
   let cursor: number | null = null
   for (;;) {
@@ -171,7 +182,7 @@ export async function listProjects(token: string, cancel?: CancelToken): Promise
   }
 }
 
-export async function listProjectConversationsPage(
+async function listProjectConversationsPage(
   token: string,
   gizmoId: string,
   cursor: string,
@@ -189,14 +200,54 @@ export interface ConversationPager {
   next(): Promise<{ items: ConversationListItem[]; done: boolean }>
 }
 
-/** 分页来源：`all` 全部 / `main` 仅主列表 / 其余按 gizmo id 视为单个 project。 */
-export const SOURCE_ALL = 'all'
-export const SOURCE_MAIN = 'main'
+// 分页来源的两个固定值，其余按 gizmo id 视为单个 project。
+// 值必须与 ui.ts 面板里「来源」下拉的 option value 一致。
+const SOURCE_ALL = 'all'
+const SOURCE_MAIN = 'main'
+
+/** 归一到 epoch 秒：列表接口给 ISO 字符串，详情接口给数字；取不到时间的排最后。 */
+function timeOf(i: ConversationListItem): number {
+  const t = i.update_time ?? i.create_time
+  if (typeof t === 'number') return t
+  if (typeof t === 'string') {
+    const ms = Date.parse(t)
+    return Number.isNaN(ms) ? -Infinity : ms / 1000
+  }
+  return -Infinity
+}
+
+/** 一个来源的页流：内部缓冲一页，对外只看得到队头。 */
+interface SourceStream {
+  done: boolean
+  peek(): ConversationListItem | undefined
+  take(): ConversationListItem
+  /** 补一页；拿不到新页就置 done */
+  fill(): Promise<void>
+}
+
+/** nextPage 返回 null 表示该源到底（空数组只是本页无内容，还要再问一次）。 */
+function makeStream(nextPage: () => Promise<ConversationListItem[] | null>): SourceStream {
+  const buf: ConversationListItem[] = []
+  const stream: SourceStream = {
+    done: false,
+    peek: () => buf[0],
+    take: () => buf.shift()!,
+    async fill() {
+      const page = await nextPage()
+      if (page == null) stream.done = true
+      else buf.push(...page)
+    },
+  }
+  return stream
+}
 
 /**
- * 多源惰性分页器：先翻主列表（offset），翻完再逐个 project 翻（字符串游标）。
+ * 多源惰性分页器：主列表（offset 分页）与每个 project（字符串游标）各是一条流，
+ * 按 update_time 做 k 路归并，交出一条严格时间倒序的列表（前提：各源自身按更新
+ * 时间倒序，两个接口都是）。代价是首屏要先把每个源都拉一页（N+2 个请求），
+ * 之后大多数 next() 只消耗缓冲区。
  * source 可把范围收窄到单一来源（面板上的「来源」下拉）；指定单个 project 时
- * 连 project 列表都不用拉，直接翻它自己的会话。
+ * 连 project 列表都不用拉，归并退化成单条流。
  * 跨源按 id 去重（主列表哪天开始包含 project 会话也不会重复导出）。
  * 主列表的终止条件只认空页（服务端会按自己的上限截页，短页不代表到底），且
  * 列表索引实测会瞬时降级提前返回空页，所以空页要隔几秒重试，连续空 3 次才算到底。
@@ -211,12 +262,7 @@ export function createConversationPager(
   let offset = 0
   let limit = 100
   let emptyRetries = 0
-  // 选单个 project 时直接跳过主列表；选主列表时 projectIds 置空跳过 project 阶段
-  let mainDone = onlyProject != null
-  let projectIds: string[] | null = source === SOURCE_MAIN ? [] : null
-  if (onlyProject != null) projectIds = [onlyProject]
-  let projectIdx = 0
-  let cursor = '0'
+  let streams: SourceStream[] | null = null
   let done = false
 
   /** 主列表一页；null = 主列表到底 */
@@ -248,45 +294,58 @@ export function createConversationPager(
     }
   }
 
-  /** 当前 project 的一页；null = 该 project 已翻完且本页无内容 */
-  async function projectPage(gizmoId: string): Promise<ConversationListItem[] | null> {
-    ensureAlive(cancel)
-    const page = await listProjectConversationsPage(token, gizmoId, cursor, cancel)
-    // gizmos 接口的条目不保证带 gizmo_id，补上才能在下游认出归属
-    const items = (page.items ?? []).map((i) => ({ ...i, gizmo_id: i.gizmo_id ?? gizmoId }))
-    const nextCursor = page.cursor ?? null
-    if (nextCursor == null) {
-      projectIdx++
-      cursor = '0'
-      return items.length > 0 ? items : null
+  /** 某个 project 的页源（自带游标）；null = 该 project 到底 */
+  function projectPages(gizmoId: string): () => Promise<ConversationListItem[] | null> {
+    let cursor: string | null = '0'
+    return async () => {
+      if (cursor == null) return null
+      ensureAlive(cancel)
+      const page = await listProjectConversationsPage(token, gizmoId, cursor, cancel)
+      cursor = page.cursor ?? null
+      // gizmos 接口的条目不保证带 gizmo_id，补上才能在下游认出归属
+      return (page.items ?? []).map((i) => ({ ...i, gizmo_id: i.gizmo_id ?? gizmoId }))
     }
-    cursor = nextCursor
-    return items
+  }
+
+  async function buildStreams(): Promise<SourceStream[]> {
+    if (onlyProject != null) return [makeStream(projectPages(onlyProject))]
+    if (source === SOURCE_MAIN) return [makeStream(mainPage)]
+    const projects = await listProjects(token, cancel)
+    return [makeStream(mainPage), ...projects.map((p) => makeStream(projectPages(p.id)))]
   }
 
   return {
     async next() {
       if (done) return { items: [], done: true }
+      streams ??= await buildStreams()
       for (;;) {
-        let batch: ConversationListItem[] | null
-        if (!mainDone) {
-          batch = await mainPage()
-          if (batch == null) mainDone = true
-        } else {
-          projectIds ??= (await listProjects(token, cancel)).map((p) => p.id)
-          const gizmoId = projectIds[projectIdx]
-          if (gizmoId == null) {
-            done = true
-            return { items: [], done: true }
-          }
-          batch = await projectPage(gizmoId)
+        // 每个未到底的源都得有队头，否则没法知道谁才是全局最新的那条
+        for (const s of streams) {
+          while (!s.done && s.peek() === undefined) await s.fill()
         }
-        if (batch == null) continue
-        // offset 翻页 + order=updated 期间列表会漂移，加上跨源重叠，统一在这里去重；
+        const out: ConversationListItem[] = []
+        for (;;) {
+          let best: SourceStream | undefined
+          for (const s of streams) {
+            const head = s.peek()
+            if (head === undefined) continue
+            if (best === undefined || timeOf(head) > timeOf(best.peek()!)) best = s
+          }
+          if (best === undefined) {
+            done = true
+            break
+          }
+          // offset 翻页 + order=updated 期间列表会漂移，加上跨源重叠，统一在这里去重
+          const item = best.take()
+          if (!seen.has(item.id)) {
+            seen.add(item.id)
+            out.push(item)
+          }
+          // 队头空了又没到底：再取就得发请求，这一页到此为止，保住惰性加载
+          if (best.peek() === undefined && !best.done) break
+        }
         // 整页都是重复时继续翻，不把空页交给调用方（会被当成到底）
-        const fresh = batch.filter((i) => !seen.has(i.id))
-        for (const i of fresh) seen.add(i.id)
-        if (fresh.length > 0) return { items: fresh, done: false }
+        if (out.length > 0 || done) return { items: out, done }
       }
     },
   }

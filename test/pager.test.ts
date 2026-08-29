@@ -11,6 +11,8 @@ afterEach(() => {
 
 interface Item {
   id: string
+  /** 真实列表接口给的是 ISO 字符串，归并排序走的就是这条路径 */
+  update_time: string
 }
 
 interface MainCall {
@@ -77,8 +79,12 @@ function mockApi(spec: MockSpec): Mock {
   return mock
 }
 
+/** t 越大越新；造成 ISO 字符串，和真实接口一致 */
+const item = (id: string, t: number): Item => ({ id, update_time: new Date(t * 1000).toISOString() })
+
+/** 一页递减时间的条目，模拟 order=updated 的倒序页 */
 const items = (n: number, from = 0): Item[] =>
-  Array.from({ length: n }, (_, i) => ({ id: `c${from + i}` }))
+  Array.from({ length: n }, (_, i) => item(`c${from + i}`, 10_000 - (from + i)))
 
 /** 抽干分页器，返回全部条目 */
 async function drain(pager: { next(): Promise<{ items: unknown[]; done: boolean }> }): Promise<
@@ -97,12 +103,12 @@ describe('createConversationPager · 主列表', () => {
     const mock = mockApi({
       main: (call) => (call.offset === 0 ? { items: items(100) } : { items: items(3, 100) }),
     })
-    const pager = createConversationPager('tok')
+    const pager = createConversationPager('tok', undefined, 'main')
 
     const p1 = await pager.next()
     expect(p1.items).toHaveLength(100)
     expect(p1.done).toBe(false)
-    // 一次 next() 只打一个请求——这正是懒加载的前提
+    // 单源时一次 next() 只打一个请求——这正是懒加载的前提
     expect(mock.paths).toHaveLength(1)
 
     const p2 = await pager.next()
@@ -112,14 +118,15 @@ describe('createConversationPager · 主列表', () => {
     expect(mock.mainCalls[1]).toEqual({ offset: 100, limit: 100 })
   }, 20_000)
 
-  test('首页即空 = 主列表到底，接着才去问 projects；done 之后不再发请求', async () => {
+  test('全空账号：先问 projects 再建流，done 之后不再发请求', async () => {
     const mock = mockApi({})
     const pager = createConversationPager('tok')
 
     expect(await pager.next()).toEqual({ items: [], done: true })
+    // 归并要先知道有哪些源，所以侧栏请求排在主列表之前
     expect(mock.paths).toEqual([
-      '/backend-api/conversations',
       '/backend-api/gizmos/snorlax/sidebar',
+      '/backend-api/conversations',
     ])
 
     expect(await pager.next()).toEqual({ items: [], done: true })
@@ -128,7 +135,7 @@ describe('createConversationPager · 主列表', () => {
 
   test('非限流 4xx 把 limit 降到 50 重试一次', async () => {
     const mock = mockApi({ main: (_call, n) => (n === 1 ? { status: 422 } : { items: items(50) }) })
-    const pager = createConversationPager('tok')
+    const pager = createConversationPager('tok', undefined, 'main')
 
     const page = await pager.next()
     expect(page.items).toHaveLength(50)
@@ -137,30 +144,38 @@ describe('createConversationPager · 主列表', () => {
 })
 
 describe('createConversationPager · projects', () => {
-  test('主列表翻完后逐个 project 按 cursor 翻，条目补上 gizmo_id', async () => {
+  test('source=all：主列表与各 project 按 update_time 归并，条目补上 gizmo_id', async () => {
     mockApi({
-      main: (call) => (call.offset === 0 ? { items: items(2) } : { items: [] }),
+      // c-tail 永远排最后，主列表在本例里不会被取空（避开空页重试的十几秒真 sleep）
+      main: () => ({ items: [item('c-new', 100), item('c-old', 70), item('c-tail', 10)] }),
       projects: [
         { id: 'g-p-a', name: '项目甲' },
         { id: 'g-p-b', name: '项目乙' },
       ],
       pages: {
         // 两页，验证字符串游标确实被回传（只翻第一页是这套接口的经典 bug）
-        'g-p-a': [items(2, 10), items(1, 12)],
-        'g-p-b': [items(1, 20)],
+        'g-p-a': [[item('a-90', 90)], [item('a-60', 60)]],
+        'g-p-b': [[item('b-80', 80)]],
       },
     })
 
-    const all = await drain(createConversationPager('tok'))
+    // 收齐 6 条就够判定顺序；不跟具体分批方式绑定
+    const pager = createConversationPager('tok')
+    const all: { id: string; gizmo_id?: string | null }[] = []
+    for (let i = 0; i < 8 && all.length < 6; i++) {
+      const { items: page } = await pager.next()
+      all.push(...(page as typeof all))
+    }
 
-    expect(all.map((i) => i.id)).toEqual(['c0', 'c1', 'c10', 'c11', 'c12', 'c20'])
-    expect(all.filter((i) => i.gizmo_id === 'g-p-a')).toHaveLength(3)
-    expect(all.filter((i) => i.gizmo_id === 'g-p-b')).toHaveLength(1)
-    expect(all.filter((i) => i.gizmo_id == null)).toHaveLength(2)
-    // 侧栏顺带把 gizmo_id → project 名喂给了转换层
+    // 三个来源交错排序，而不是一源接一源
+    expect(all.map((i) => i.id)).toEqual(['c-new', 'a-90', 'b-80', 'c-old', 'a-60', 'c-tail'])
+    expect(all.filter((i) => i.gizmo_id === 'g-p-a').map((i) => i.id)).toEqual(['a-90', 'a-60'])
+    expect(all.filter((i) => i.gizmo_id === 'g-p-b').map((i) => i.id)).toEqual(['b-80'])
+    expect(all.filter((i) => i.gizmo_id == null)).toHaveLength(3)
+    // 侧栏顺带把 gizmo_id → project 名喂给了转换层（列表里的项目标签靠它）
     expect(projectNameOf('g-p-a')).toBe('项目甲')
     expect(projectNameOf('g-p-b')).toBe('项目乙')
-  }, 20_000)
+  }, 30_000)
 
   test('source=main 只翻主列表，不碰 gizmos 接口', async () => {
     const mock = mockApi({
@@ -173,7 +188,7 @@ describe('createConversationPager · projects', () => {
 
     expect(all.map((i) => i.id)).toEqual(['c40', 'c41'])
     expect(mock.paths.every((p) => p === '/backend-api/conversations')).toBe(true)
-  }, 20_000)
+  }, 45_000)
 
   test('source=<gizmo id> 直奔该 project，不碰主列表也不拉侧栏', async () => {
     const mock = mockApi({
@@ -205,7 +220,7 @@ describe('createConversationPager · projects', () => {
     const all = await drain(createConversationPager('tok'))
 
     expect(all.map((i) => i.id)).toEqual(['c0', 'c1', 'c30'])
-  }, 20_000)
+  }, 45_000)
 })
 
 // 未覆盖：列表中段返回空页时的「隔 4s / 8s 重试确认，连续空 3 次才算到底」路径。
