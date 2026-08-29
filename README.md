@@ -2,9 +2,9 @@
 
 # Inkstone · 「砚」
 
-**Batch-export your entire chatgpt.com history to Obsidian-friendly Markdown — one click, in the page, fully local.**
+**Export your chatgpt.com and claude.ai conversations to Obsidian-friendly Markdown — one click, in the page, fully local.**
 
-*An inkstone grinds raw pigment into ink for writing. Inkstone helps you grind GPT's raw output into ink for your notes.*
+*An inkstone grinds raw pigment into ink for writing. Inkstone helps you grind raw model output into ink for your notes.*
 
 [![release](https://img.shields.io/github/v/release/ZhenHuangLab/inkstone)](https://github.com/ZhenHuangLab/inkstone/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/ZhenHuangLab/inkstone/total)](https://github.com/ZhenHuangLab/inkstone/releases)
@@ -20,7 +20,7 @@
   &nbsp;→&nbsp;
   <a href="https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js"><b>② Install Inkstone</b></a>
   &nbsp;→&nbsp;
-  <b>③ Open chatgpt.com, hit ⤓</b>
+  <b>③ Open chatgpt.com or claude.ai, hit ⤓</b>
 </p>
 
 ---
@@ -29,7 +29,25 @@
 
 Your ChatGPT history holds real work, but getting it into a vault is painful. The official export is a raw JSON dump: tool and system messages are stripped (Canvas and code-interpreter output simply aren't there), some attachments have already expired server-side, math arrives in `\( \)` delimiters Obsidian won't render, and web-search citations turn into private-use Unicode garbage. Copy-pasting by hand doesn't scale past ten conversations, let alone a thousand.
 
-Inkstone runs inside chatgpt.com and fetches conversations through the same backend API the app itself uses, then converts everything locally in your browser — nothing ever leaves the page. The result is Markdown that reads natively in Obsidian: real headings per turn, `$` / `$$` math, resolved citations, downloaded images, clean frontmatter.
+Inkstone runs inside the page and fetches conversations through the same backend API the app itself uses, then converts everything locally in your browser — nothing ever leaves the page. The result is Markdown that reads natively in Obsidian: real headings per turn, `$` / `$$` math, resolved citations, downloaded images, clean frontmatter.
+
+## Supported sites
+
+| | ChatGPT | Claude |
+| --- | --- | --- |
+| Export current conversation | ✅ | ✅ |
+| Batch / export-all | ✅ | ✅ conservative safeguards |
+| Incremental sync | ✅ | ✅ |
+| Rich documents | Canvas patch replay | Artifact fold-up to final version |
+| Thoughts / tool traces | ✅ opt-in | ✅ opt-in |
+| Attachments | images and files downloaded | images, documents, and generated files downloaded; text extractions inlined |
+
+**Claude batch export uses a separate, deliberately conservative policy.** Its rate-limit
+profile is still not backed by a large real-world sample, so ChatGPT's settings are not
+reused: one worker, spacing from 1500 ms, a 30-second rest every 40 requests, and no second
+pass over failed items. One global `Retry-After` signal, three 429s, 1000 HTTP attempts, or
+an abnormal failure ratio stops the batch. Successful conversations are still written;
+unfinished ones do not advance the watermark and are picked up by the next incremental run.
 
 ## Screenshots
 
@@ -97,11 +115,12 @@ bun run build        # → dist/inkstone.user.js, drag it into Tampermonkey
 
 ## Usage
 
-Open chatgpt.com (logged in) → click the **⤓ button left of the Share button** in the top bar → pick **Markdown zip** or **raw JSON zip** → unzip into your Obsidian vault.
+Open chatgpt.com or claude.ai (logged in) → click the **⤓ button** in the top bar → pick **Markdown zip** or **raw JSON zip** → unzip into your Obsidian vault.
 
 - The button position is switchable (panel → advanced settings): next to Share in the top bar, or a glass button beside the input box
-- The UI follows ChatGPT's appearance settings automatically (light/dark + accent color)
+- The UI follows the host page's light/dark appearance; ChatGPT follows its selected accent, while Claude uses its brand orange
 - Exports are cancelable; a single failed conversation never aborts the run — failures are summarized in `_failures.json`
+- Claude batches run with one worker; after a protective abort, wait as instructed instead of restarting immediately
 
 ## Offline CLI
 
@@ -126,9 +145,16 @@ bun run typecheck
 bun run build
 ```
 
+Note for claude.ai: its CSP may block the dev-server script, so verify Claude-side changes
+against a real `bun run build` artifact loaded into Tampermonkey rather than `bun run dev`.
+
+Architecture: `src/core/` is site-agnostic (IR, renderer, throttled fetcher) and
+`src/sites/<site>/` holds everything that knows one provider's endpoints, fields and DOM.
+Adding a site means adding an adapter, not touching the orchestration. See `PLAN.md` § P5.
+
 ## Roadmap
 
-MV3 browser extension (no Tampermonkey, store release) and Claude / Gemini support. Already done: incremental sync, direct-write to an Obsidian vault, settings panel, Canvas patch replay, and the offline CLI. Details in [PLAN.md](./PLAN.md) (Chinese).
+An MV3 browser extension (no Tampermonkey, store release) and Gemini support. Already done: the multi-site adapter architecture, Claude batch and incremental export, direct-write to an Obsidian vault, settings panel, Canvas patch replay, Artifact fold-up, and the offline CLI. Details in [PLAN.md](./PLAN.md) (Chinese).
 
 ## License
 

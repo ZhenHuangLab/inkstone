@@ -1,4 +1,7 @@
+import type { SourceLink } from '../core/ir'
 import type { ContentReference, ContentReferenceItem } from '../types'
+
+export type { SourceLink }
 
 // ChatGPT 用私有区 Unicode（U+E200 区段）包裹引用标记，如 <U+E200>cite<U+E202>turn0search1<U+E201>。
 // 源码里不能出现这些不可见字面量（编辑器/工具链会悄悄弄坏它们），统一用码点构造。
@@ -8,11 +11,6 @@ const PUA_MARKER_CAPTURE = new RegExp(`${cp(0xe200)}([^${cp(0xe201)}]*)${cp(0xe2
 const PUA_SEP = cp(0xe202)
 const PUA_ANY = new RegExp(`[${cp(0xe000)}-${cp(0xf8ff)}]`, 'g')
 const LEGACY_CITATION = /【[^【】\n]*†[^【】\n]*】/g // 【12†source】
-
-export interface SourceLink {
-  title: string
-  url: string
-}
 
 export interface RestoreResult {
   text: string

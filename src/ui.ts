@@ -1,4 +1,6 @@
-import { sanitizeSubdir } from './convert/markdown'
+import { sanitizeSubdir } from './core/render'
+import type { SiteUi } from './sites'
+import { computeFabPlacement } from './ui-position'
 
 export type ExportFormat = 'markdown' | 'json'
 export type ExportScope = 'current' | 'all' | 'selection'
@@ -42,7 +44,7 @@ export interface PickerItem {
   id: string
   title: string
   updated: string
-  /** 所属 project 名；缺省 = 主列表会话 */
+  /** 所属 project 名；缺省 = 主列表会话。 */
   project?: string
 }
 
@@ -54,13 +56,17 @@ export interface PanelHandle {
   appendPicker(items: PickerItem[], done: boolean): void
   /** 清空多选列表（重新拉取前调用） */
   clearPicker(): void
-  /** 填「来源」下拉里的 project 选项（当前选中项会保留） */
+  /** 填充来源下拉中的 project 选项，并保留仍然存在的当前选项。 */
   setPickerProjects(projects: { id: string; name: string }[]): void
   /** 某一页拉取失败：解除加载中状态，允许再次触发 */
   pickerLoadFailed(): void
 }
 
 export interface PanelCallbacks {
+  /** 当前站点：决定标题文案与批量入口是否出现 */
+  site: { id: string; label: string; supportsBatch: boolean; supportsSources: boolean }
+  /** 站点专属的锚点与配色探测 */
+  siteUi: SiteUi
   /** ids 仅在 scope === 'selection' 时有意义 */
   onExport(
     scope: ExportScope,
@@ -69,10 +75,7 @@ export interface PanelCallbacks {
     panel: PanelHandle,
     opts: ExportOptions,
   ): void
-  /**
-   * 首次切到「选择」/ 点重新拉取 / 切换「来源」：回调负责重置分页并拉第一页。
-   * source 为 `all` / `main` / project 的 gizmo id。
-   */
+  /** 首次进入、重新拉取或切换来源；source 为 all/main/project id。 */
   onPickList(panel: PanelHandle, source: string): void
   /** 列表滚到底部：回调负责拉下一页并调用 panel.appendPicker */
   onPickMore(panel: PanelHandle): void
@@ -172,7 +175,7 @@ const STYLE = `
      底色照抄页面 translucent-surface（透明 + blur(24px) 液态玻璃，无阴影），
      悬浮才出圆角矩形底色；无高光扫过 */
   :host([data-pos="header"]) .fab {
-    width: 36px; height: 36px; border-radius: 8px;
+    width: var(--header-fab-size, 36px); height: var(--header-fab-size, 36px); border-radius: 8px;
     background: transparent; border-color: transparent; box-shadow: none;
     -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
   }
@@ -198,10 +201,17 @@ const STYLE = `
     max-height: min(72vh, calc(100vh - var(--fab-bottom, 88px) - 72px));
     max-width: calc(100vw - 32px);
     transform-origin: 100% 100%;
-    transition: right .25s var(--ease), bottom .25s var(--ease);
+    transition: left .25s var(--ease), right .25s var(--ease), bottom .25s var(--ease);
   }
   .panel.open { display: block; animation: rise .22s var(--ease); }
   @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+  /* composer 模式优先从按钮向右上展开；右侧空间不足时贴视口右缘，少盖住输入区。 */
+  :host([data-pos="composer"]) .panel {
+    left: var(--panel-left, 16px); right: auto;
+    width: min(304px, calc(100vw - var(--panel-left, 16px) - 16px));
+    transform-origin: 50% 100%;
+  }
+  :host([data-pos="composer"]) .adv .row { flex-wrap: wrap; }
   /* header 模式：面板从按钮下方展开 */
   :host([data-pos="header"]) .panel {
     bottom: auto; top: var(--panel-top, 56px);
@@ -239,7 +249,6 @@ const STYLE = `
     outline: none; cursor: pointer; transition: border-color .15s var(--ease);
   }
   .picker select.src:focus { border-color: var(--accent); }
-  /* 弹出的 option 在系统层渲染，不继承面板的透明背景，得给实色 */
   .picker select.src option { background: Canvas; color: CanvasText; }
   .picker input[type="search"] {
     flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
@@ -442,15 +451,10 @@ export function mountPanel(cb: PanelCallbacks): void {
   let accentScanTick = 0
   const detectAccent = (force = false): void => {
     const rootEl = document.documentElement
-    const rootCS = getComputedStyle(rootEl)
-    const theme = rootEl.getAttribute('data-chat-theme') || 'default'
-    const bg = parseColor(rootCS.getPropertyValue(`--${theme}-theme-submit-btn-bg`))
-    if (bg) {
-      applyAccent(
-        bg,
-        parseColor(rootCS.getPropertyValue(`--${theme}-theme-submit-btn-text`)),
-        parseColor(rootCS.getPropertyValue(`--${theme}-theme-entity-accent`)),
-      )
+    // 站点专属探测优先（各家主色变量命名不同）；探测不到再走下面的通用扫描
+    const hit = cb.siteUi.accent(parseColor)
+    if (hit) {
+      applyAccent(hit.bg, hit.fg, hit.ring)
       return
     }
     // 改版兜底：扫 html/body 上含 accent 的自定义属性，取最饱和的可解析颜色
@@ -476,15 +480,15 @@ export function mountPanel(cb: PanelCallbacks): void {
     if (best) applyAccent(best, null, null)
   }
 
-  // 跟随 ChatGPT 主题（html.dark class）与 accent 设置（html[data-chat-theme]）
+  // 跟随页面的明暗与主题色设置（判定方式由站点适配器给）
   const syncTheme = () => {
-    host.dataset['theme'] = document.documentElement.classList.contains('dark') ? 'dark' : 'light'
+    host.dataset['theme'] = cb.siteUi.isDark() ? 'dark' : 'light'
     detectAccent(true) // 明暗/主题色切换时 accent 值跟着变
   }
   syncTheme()
   new MutationObserver(syncTheme).observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ['class', 'data-chat-theme'],
+    attributeFilter: cb.siteUi.themeAttributes,
   })
 
   const style = document.createElement('style')
@@ -493,31 +497,33 @@ export function mountPanel(cb: PanelCallbacks): void {
 
   const fab = document.createElement('button')
   fab.className = 'fab'
-  fab.title = 'Inkstone — 导出对话'
-  fab.setAttribute('aria-label', 'Inkstone — 导出对话')
+  fab.title = `Inkstone — 导出 ${cb.site.label} 对话`
+  fab.setAttribute('aria-label', `Inkstone — 导出 ${cb.site.label} 对话`)
   fab.setAttribute('aria-haspopup', 'dialog')
   fab.setAttribute('aria-expanded', 'false')
   // 关闭态 = 下载图标；打开态 = 向下箭头（收起面板），两层交叉淡出
-  // pi-lens-ignore: ast-grep:no-inner-html, no-inner-html
   fab.innerHTML = `<span class="ic ic-dl">${ICON_DOWNLOAD}</span><span class="ic ic-arrow">${ICON_ARROW_DOWN}</span>`
 
   const panel = document.createElement('div')
   panel.className = 'panel'
   panel.setAttribute('role', 'dialog')
   panel.setAttribute('aria-label', '导出对话')
-  // pi-lens-ignore: ast-grep:no-inner-html, no-inner-html
+  // 批量能力未开放的站点直接不出现「全部 / 选择…」——按钮存在但点不动，
+  // 比它根本不出现更让人困惑
+  const batchAttr = cb.site.supportsBatch ? '' : ' hidden'
+  const sourceAttr = cb.site.supportsSources ? '' : ' hidden'
   panel.innerHTML = `
-    <div class="head">导出对话</div>
+    <div class="head">导出 ${cb.site.label} 对话</div>
 
     <div class="sec">范围</div>
     <div class="seg" data-seg="scope">
       <button data-v="current" class="on" aria-pressed="true">当前对话</button>
-      <button data-v="all" aria-pressed="false">全部</button>
-      <button data-v="selection" aria-pressed="false">选择…</button>
+      <button data-v="all" aria-pressed="false"${batchAttr}>全部</button>
+      <button data-v="selection" aria-pressed="false"${batchAttr}>选择…</button>
     </div>
     <div class="picker">
       <div class="srcrow">
-        <select class="src" aria-label="列表来源">
+        <select class="src" aria-label="列表来源"${sourceAttr}>
           <option value="all">全部</option>
           <option value="main">主列表</option>
         </select>
@@ -578,6 +584,28 @@ export function mountPanel(cb: PanelCallbacks): void {
   `
   root.append(fab, panel)
 
+  // Claude 会在 document 上监听交互，并把 shadow DOM 事件的宿主误判成页面本身。
+  // 在面板内部冒泡阶段截断可保留控件默认行为与目标监听器，同时避免点击、数字输入、
+  // 粘贴或 focusin 被 Claude 接走并落进聊天编辑器。
+  for (const type of [
+    'pointerdown',
+    'mousedown',
+    'mouseup',
+    'click',
+    'dblclick',
+    'focusin',
+    'focusout',
+    'keydown',
+    'keypress',
+    'keyup',
+    'beforeinput',
+    'input',
+    'change',
+    'paste',
+  ] as const) {
+    panel.addEventListener(type, (event) => event.stopPropagation())
+  }
+
   // FAB 锚定系统，双模式：
   //   composer（默认）：贴输入框右侧垂直居中，挤不下退到输入框正上方（玻璃圆钮）；
   //   header：贴顶栏 Share 按钮左侧（没有 Share 时贴 header 动作区），面板向下展开（幽灵钮）。
@@ -587,65 +615,59 @@ export function mountPanel(cb: PanelCallbacks): void {
   // getBoundingClientRect，样式仅在数值变化时写入。
   let mode: 'composer' | 'header' = cb.settings.values.fabPos
   host.dataset['pos'] = mode
-  const fabSize = () => (mode === 'header' ? 36 : 44)
+  // Claude 顶栏原生动作实测为 28px；ChatGPT 保持原有 36px。
+  const headerFabSize = cb.site.id === 'claude' ? 28 : 36
+  host.style.setProperty('--header-fab-size', `${headerFabSize}px`)
+  const fabSize = () => (mode === 'header' ? headerFabSize : 44)
   const fabGap = () => (mode === 'header' ? 8 : 12)
   let curRight = -1
   let curBottom = -1
   let curPanelTop = -1
+  let curPanelLeft = -1
   const findAnchor = (): HTMLElement | null =>
-    (mode === 'header'
-      ? (document.querySelector('[data-testid="share-chat-button"]') ??
-        document.querySelector('#conversation-header-actions'))
-      : (document.querySelector('#prompt-textarea')?.closest('form') ??
-        document.querySelector('form[data-type="unified-composer"]'))) as HTMLElement | null
+    mode === 'header' ? cb.siteUi.headerAnchor() : cb.siteUi.composerAnchor()
   let anchor: HTMLElement | null = null
-  const syncPos = (): void => {
-    if (!anchor?.isConnected) return // 没有锚点：位置保持原样，藏与不藏由 rebindAnchor 决定
+  const syncPos = (): boolean => {
+    if (!anchor?.isConnected) return false // 没有锚点：位置保持原样，藏与不藏由 rebindAnchor 决定
     const r = anchor.getBoundingClientRect()
-    if (r.height <= 0) return
-    const size = fabSize()
-    let right: number
-    let bottom: number
-    if (mode === 'header') {
-      if (r.top < 0) return
-      right = Math.round(window.innerWidth - r.left + fabGap())
-      bottom = Math.round(window.innerHeight - r.bottom + (r.height - size) / 2)
-      const panelTop = Math.round(r.bottom + 10)
-      if (panelTop !== curPanelTop) {
-        curPanelTop = panelTop
-        host.style.setProperty('--panel-top', `${panelTop}px`)
-      }
-    } else {
-      if (r.bottom > window.innerHeight) return
-      const beside = Math.round(window.innerWidth - r.right - fabGap() - size)
-      if (beside >= 8) {
-        right = beside
-        bottom = Math.round(Math.max(8, window.innerHeight - r.bottom + (r.height - size) / 2))
-      } else {
-        right = 20
-        bottom = Math.round(Math.min(window.innerHeight - 60, window.innerHeight - r.top + fabGap()))
-      }
+    const placement = computeFabPlacement(
+      mode,
+      r,
+      { width: window.innerWidth, height: window.innerHeight },
+      fabSize(),
+      fabGap(),
+    )
+    if (!placement) return false
+    if (placement.panelTop != null && placement.panelTop !== curPanelTop) {
+      curPanelTop = placement.panelTop
+      host.style.setProperty('--panel-top', `${placement.panelTop}px`)
     }
-    if (right !== curRight) {
-      curRight = right
-      host.style.setProperty('--fab-right', `${right}px`)
+    if (placement.panelLeft != null && placement.panelLeft !== curPanelLeft) {
+      curPanelLeft = placement.panelLeft
+      host.style.setProperty('--panel-left', `${placement.panelLeft}px`)
     }
-    if (bottom !== curBottom) {
-      curBottom = bottom
-      host.style.setProperty('--fab-bottom', `${bottom}px`)
+    if (placement.right !== curRight) {
+      curRight = placement.right
+      host.style.setProperty('--fab-right', `${placement.right}px`)
     }
+    if (placement.bottom !== curBottom) {
+      curBottom = placement.bottom
+      host.style.setProperty('--fab-bottom', `${placement.bottom}px`)
+    }
+    return true
+  }
+  const closePanel = (): void => {
+    panel.classList.remove('open')
+    fab.classList.remove('open')
+    fab.setAttribute('aria-expanded', 'false')
   }
   const hideFab = (): void => {
     fab.classList.remove('in')
-    if (panel.classList.contains('open')) {
-      panel.classList.remove('open')
-      fab.classList.remove('open')
-      fab.setAttribute('aria-expanded', 'false')
-    }
+    closePanel()
   }
   const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(syncPos)
   let anchorMissing = 0
-  const rebindAnchor = (): void => {
+  const rebindAnchor = (): boolean => {
     const c = findAnchor()
     if (c !== anchor) {
       ro?.disconnect()
@@ -654,10 +676,11 @@ export function mountPanel(cb: PanelCallbacks): void {
     }
     if (anchor?.isConnected) {
       anchorMissing = 0
-      syncPos()
+      return syncPos()
     } else if (++anchorMissing >= 2) {
       hideFab() // 连续两轮（约 4s）没有锚点：整个入口隐藏
     }
+    return false
   }
   // 找到输入框、且位置连续两拍（250ms）稳定后才现身（.in)——SPA 水合期间 composer
   // 可能先出现在错误位置（居中/侧栏未挂载），立刻现身会被用户看到「先落错位再闪跳」。
@@ -667,9 +690,9 @@ export function mountPanel(cb: PanelCallbacks): void {
   let bootKey = ''
   let bootStable = 0
   const boot = (): void => {
-    rebindAnchor()
+    const positioned = rebindAnchor()
     const key = `${curRight},${curBottom}`
-    bootStable = anchor && key === bootKey ? bootStable + 1 : anchor ? 1 : 0
+    bootStable = positioned && key === bootKey ? bootStable + 1 : positioned ? 1 : 0
     bootKey = key
     if (bootStable >= 2) {
       bootDone = true
@@ -687,8 +710,8 @@ export function mountPanel(cb: PanelCallbacks): void {
   let tick = 0
   setInterval(() => {
     if (++tick % 4 === 0) {
-      rebindAnchor()
-      if (bootDone && anchor?.isConnected && curRight >= 0 && !fab.classList.contains('in')) {
+      const positioned = rebindAnchor()
+      if (bootDone && positioned && !fab.classList.contains('in')) {
         detectAccent(true)
         fab.classList.add('in')
       }
@@ -740,9 +763,23 @@ export function mountPanel(cb: PanelCallbacks): void {
   fabPosEl.value = mode
   fabPosEl.addEventListener('change', () => {
     mode = fabPosEl.value === 'header' ? 'header' : 'composer'
+    // select 位于展开面板内：换位时先正常收起，否则面板可能移出视口、按钮却残留
+    // open/蓝底/向下箭头状态。位置缓存也必须清空，确保双向切换都立即写入新坐标。
+    closePanel()
+    fab.classList.remove('in')
+    ro?.disconnect()
+    anchor = null
+    curRight = -1
+    curBottom = -1
+    curPanelTop = -1
+    curPanelLeft = -1
+    host.style.removeProperty('--fab-right')
+    host.style.removeProperty('--fab-bottom')
+    host.style.removeProperty('--panel-top')
+    host.style.removeProperty('--panel-left')
     host.dataset['pos'] = mode
     cb.settings.onSettingsChange({ fabPos: mode })
-    rebindAnchor()
+    if (rebindAnchor()) fab.classList.add('in')
   })
 
   const linkStyleEl = panel.querySelector<HTMLSelectElement>('select[data-opt="linkStyle"]')!
@@ -867,7 +904,6 @@ export function mountPanel(cb: PanelCallbacks): void {
       for (const item of items) {
         const row = document.createElement('label')
         row.className = 'row'
-        // title 属性兼任 tooltip 与搜索词源，带上 project 名才能搜到项目下的会话
         row.title = item.project ? `${item.title}（${item.project}）` : item.title
         const box = document.createElement('input')
         box.type = 'checkbox'
@@ -900,17 +936,15 @@ export function mountPanel(cb: PanelCallbacks): void {
       if (!done) queueMicrotask(maybeAutoFill)
     },
     setPickerProjects: (projects) => {
-      // 「全部」「主列表」两个固定项之后全量重建 project 选项，选中项按 value 复原
       const keep = pickerSrc.value
       while (pickerSrc.options.length > 2) pickerSrc.remove(2)
-      for (const p of projects) {
-        const opt = document.createElement('option')
-        opt.value = p.id
-        opt.textContent = p.name
-        pickerSrc.add(opt)
+      for (const project of projects) {
+        const option = document.createElement('option')
+        option.value = project.id
+        option.textContent = project.name
+        pickerSrc.add(option)
       }
-      // 项目被删掉时选中项会消失，退回「全部」——但不重拉，列表内容仍是有效的
-      pickerSrc.value = [...pickerSrc.options].some((o) => o.value === keep) ? keep : 'all'
+      pickerSrc.value = [...pickerSrc.options].some((option) => option.value === keep) ? keep : 'all'
     },
     clearPicker: () => {
       for (const r of rows()) r.remove()
