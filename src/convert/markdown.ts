@@ -35,6 +35,8 @@ export interface ConvertOptions {
   headingMode?: HeadingMode
   /** 是否写入工具运行痕迹（发给工具的代码/搜索请求与运行输出），默认不写入 */
   toolTraces?: boolean
+  /** 所属 project 名（仅 project 会话有）；写进 frontmatter 供 Dataview 分组 */
+  projectName?: string
 }
 
 export type LinkStyle = 'wikilink' | 'markdown'
@@ -119,11 +121,15 @@ export function conversationToMarkdown(
   // 收尾排版：正文里 3 连以上空行压成 1 个空行（代码块内不动）
   const tidied = mapTextSegmentsOutsideCode(body, (s) => s.replace(/\n{3,}/g, '\n\n'))
 
+  // project / 自定义 GPT 的会话网址带 gizmo 段，写平铺版会丢掉归属信息
+  const gizmoId = conv.gizmo_id ?? null
+
   const fm = [
     '---',
     `title: ${yamlQuote(title)}`,
     `chat_id: ${convId}`,
-    `url: https://chatgpt.com/c/${convId}`,
+    `url: https://chatgpt.com${gizmoId ? `/g/${gizmoId}` : ''}/c/${convId}`,
+    copts.projectName ? `project: ${yamlQuote(copts.projectName)}` : null,
     `created: ${toIso(conv.create_time)}`,
     `updated: ${toIso(conv.update_time)}`,
     model ? `model: ${model}` : null,

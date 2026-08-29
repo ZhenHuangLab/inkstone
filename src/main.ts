@@ -6,6 +6,8 @@ import {
   createConversationPager,
   getAccessToken,
   listAllConversations,
+  listProjects,
+  projectNameOf,
   type ConversationPager,
   mapConcurrent,
   resolveFileDownload,
@@ -144,6 +146,7 @@ async function loadNextPage(panel: PanelHandle, gen: number = pagerGen): Promise
       id: i.id,
       title: i.title ?? '',
       updated: shortDate(i.update_time),
+      project: projectNameOf(i.gizmo_id),
     }))
     panel.appendPicker(picked, done)
     panel.setStatus(
@@ -304,6 +307,24 @@ function createProcessor(
     return `*(附件未下载：${a.name ?? a.fileId}，${fmtSize(actual)} 超过 ${fmtSize(cap)} 上限)*`
   }
 
+  // 全量/所选导出走分页器，名字早就缓存好了；只有单对话导出会落到这里补拉一次
+  let projectsPass: Promise<unknown> | null = null
+
+  /** 会话详情只带 gizmo_id，project 名要靠 projects 列表换（一次导出最多补拉一次）。 */
+  async function projectNameFor(gizmoId: string | null | undefined): Promise<string | undefined> {
+    if (!gizmoId) return undefined
+    const known = projectNameOf(gizmoId)
+    if (known) return known
+    projectsPass ??= listProjects(token, cancel)
+    try {
+      await projectsPass
+    } catch (e) {
+      if (e instanceof CancelledError) throw e
+      return undefined // 拿不到项目名不影响正文
+    }
+    return projectNameOf(gizmoId)
+  }
+
   async function processConversation(item: ConversationListItem): Promise<{ path: string }> {
     const conv = await fetchConversation(token, item.id, cancel)
     if (kind === 'json') {
@@ -315,6 +336,7 @@ function createProcessor(
       thoughts: opts.thoughts,
       toolTraces: opts.toolTraces,
       headingMode: opts.headingMode,
+      projectName: await projectNameFor(conv.gizmo_id),
     })
     let md = markdown
     let assetIdx = 0

@@ -58,7 +58,7 @@ Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backen
 - **引用还原**：联网搜索引用 → 行内 `[来源](url)` 链接 + 文末 `# Sources` 汇总；文件引用 → 文件名说明；还原不了的标记剥离，绝不留乱码
 - 思维链、工具运行痕迹（代码解释器代码、搜索请求、运行输出）均折叠 callout 包裹，且**默认都不写入**——高级设置「写入思考过程」「写入工具过程」分别开启（CLI 对应 `--thoughts` / `--tool-traces`）
 - 未知内容类型原样保留进折叠 callout，绝不静默丢内容
-- frontmatter：`title / chat_id / url / created / updated / model / tags`
+- frontmatter：`title / chat_id / url / project / created / updated / model / tags`
 
 ### 附件
 
@@ -66,6 +66,10 @@ Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backen
 - 用户上传的文件 ≤2MB 下载并链接，超限的留说明占位
 - **目录可定制**：笔记子文件夹（默认 `conversations`，可 `a/b` 嵌套、可留空写根目录）与附件子文件夹（默认 `attachments`，相对笔记所在目录、可留空与笔记同层）均可在设置里改；附件链接是相对 .md 的严格相对路径，GitHub/VS Code 预览同样可用
 - 「下载附件」开关：关闭后纯文本导出，请求量骤减
+
+### Projects（项目）
+
+Projects 里的对话在「当前 / 全部 / 所选」三种范围下都能导出。主列表接口只返回侧栏「Chats」那份平铺列表，所以 Inkstone 会额外逐个翻每个 project 自己的会话列表，再按 id 合并去重。project 对话的 frontmatter 多一个 `project:` 字段、`url` 带上 `/g/<gizmo-id>` 段，多选列表里也会标出所属项目名。
 
 ### 增量同步
 

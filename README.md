@@ -58,7 +58,7 @@ Inkstone runs inside chatgpt.com and fetches conversations through the same back
 - **Citations restored**: web-search citations become inline `[source](url)` links plus a `# Sources` section at the end; file citations become filename notes; anything unresolvable is stripped — no garbled markers, ever
 - Chain-of-thought and tool traces (code-interpreter code, search queries, run output) are wrapped in collapsed callouts and **not written by default** — opt in via advanced settings ("write thoughts" / "write tool traces"), or `--thoughts` / `--tool-traces` in the CLI
 - Unknown content types are preserved verbatim inside collapsed callouts — nothing is ever silently dropped
-- Frontmatter: `title / chat_id / url / created / updated / model / tags`
+- Frontmatter: `title / chat_id / url / project / created / updated / model / tags`
 
 ### Attachments
 
@@ -66,6 +66,10 @@ Inkstone runs inside chatgpt.com and fetches conversations through the same back
 - User-uploaded files ≤ 2 MB are downloaded and linked; larger ones get a placeholder note
 - Folder layout is customizable in settings: the notes subfolder (default `conversations`, nestable as `a/b`, empty = vault root) and the attachments subfolder (default `attachments`, relative to the notes folder, empty = same level as notes). Attachment links are strict relative paths, so GitHub and VS Code previews work too
 - A "download attachments" toggle: turn it off for text-only export with drastically fewer requests
+
+### Projects
+
+Conversations inside ChatGPT **Projects** are covered by every scope. The main conversation-list endpoint only returns the flat sidebar "Chats" list, so Inkstone additionally walks each project's own conversation list and merges the two, deduplicated by id. Project conversations get a `project:` frontmatter field and a `chatgpt.com/g/<gizmo-id>/c/<id>` URL, and are labelled with the project name in the multi-select list.
 
 ### Incremental sync
 

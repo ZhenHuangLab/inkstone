@@ -104,6 +104,8 @@ export async function writeVaultFile(
   const file = await dir.getFileHandle(parts[parts.length - 1]!, { create: true })
   const w = await file.createWritable()
   try {
+    // SAFETY: 同 zip.ts 里的 BlobPart 断言——Uint8Array 运行时就是 BufferSource，
+    // 只是 TS lib 把它窄化成了 ArrayBuffer 支撑的视图
     await w.write(data as unknown as BufferSource)
     await w.close() // close 才落盘
   } catch (e) {

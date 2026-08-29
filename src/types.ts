@@ -11,6 +11,8 @@ export interface ConversationListItem {
   // 列表接口给 ISO 字符串，详情接口给 epoch 秒，两种都收
   create_time?: string | number | null
   update_time?: string | number | null
+  /** 归属的 gizmo：project 为 `g-p-…`，自定义 GPT 为 `g-…`；普通对话为空 */
+  gizmo_id?: string | null
   [k: string]: unknown
 }
 
@@ -19,6 +21,30 @@ export interface ConversationListPage {
   total: number
   offset: number
   limit: number
+  [k: string]: unknown
+}
+
+/** Projects 在后端叫 gizmo；这里只留导出需要的 id + 名字。 */
+export interface ProjectInfo {
+  id: string
+  name: string
+}
+
+/** `/backend-api/gizmos/snorlax/sidebar`：project 列表，cursor 为数字，null = 到底。 */
+export interface GizmoSidebarPage {
+  cursor?: number | null
+  items?: Array<{
+    // 双层 gizmo 嵌套是接口原样，不是笔误
+    gizmo?: { gizmo?: { id?: string; display?: { name?: string | null } | null } | null } | null
+    [k: string]: unknown
+  }>
+  [k: string]: unknown
+}
+
+/** `/backend-api/gizmos/<id>/conversations`：cursor 是字符串游标（不是 offset），null = 到底。 */
+export interface GizmoConversationsPage {
+  items?: ConversationListItem[]
+  cursor?: string | null
   [k: string]: unknown
 }
 
@@ -123,5 +149,7 @@ export interface ConversationDetail {
   current_node?: string | null
   conversation_id?: string
   default_model_slug?: string | null
+  /** 归属的 gizmo（project / 自定义 GPT）；详情接口自带，无需查列表 */
+  gizmo_id?: string | null
   [k: string]: unknown
 }

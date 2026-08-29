@@ -109,6 +109,15 @@ function die(msg: string): never {
   process.exit(1)
 }
 
+/** 包里的 JSON 坏了就报是哪个文件，别抛裸的 SyntaxError。 */
+function parseJson<T>(bytes: Uint8Array, what: string): T {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as T
+  } catch (e) {
+    die(`${what} 不是合法 JSON（导出包损坏？）：${String(e)}`)
+  }
+}
+
 // ---------- 输入源：zip 与目录同接口 ----------
 
 interface ExportSource {
@@ -200,14 +209,13 @@ const metaEntries = source.readMany(
 const assetNameByDat: Record<string, string> = {}
 for (const [n, bytes] of metaEntries) {
   if (basename(n) === 'conversation_asset_file_names.json') {
-    Object.assign(assetNameByDat, JSON.parse(new TextDecoder().decode(bytes)))
+    Object.assign(assetNameByDat, parseJson<Record<string, string>>(bytes, basename(n)))
   }
 }
 
-const decoder = new TextDecoder()
 const convById = new Map<string, ConversationDetail>()
 for (const entry of convEntries) {
-  const list = JSON.parse(decoder.decode(metaEntries.get(entry)!)) as ConversationDetail[]
+  const list = parseJson<ConversationDetail[]>(metaEntries.get(entry)!, basename(entry))
   for (const conv of list) {
     const id = String(conv.conversation_id ?? conv.id ?? '')
     if (id !== '') convById.set(id, conv)

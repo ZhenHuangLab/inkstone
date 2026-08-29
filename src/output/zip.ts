@@ -15,6 +15,8 @@ export function makeZip(files: ZipEntries): Promise<Uint8Array> {
 }
 
 export function downloadBlob(filename: string, data: Uint8Array, mime = 'application/zip'): void {
+  // SAFETY: Uint8Array 本就是合法 BlobPart；TS lib 把 BlobPart 窄化成 ArrayBuffer 支撑的视图，
+  // 而 fflate 返回的是 Uint8Array<ArrayBufferLike>，只能靠断言跨过这道编译期鸿沟
   const blob = new Blob([data as unknown as BlobPart], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

@@ -42,6 +42,8 @@ export interface PickerItem {
   id: string
   title: string
   updated: string
+  /** 所属 project 名；缺省 = 主列表会话 */
+  project?: string
 }
 
 export interface PanelHandle {
@@ -245,6 +247,10 @@ const STYLE = `
   .picker .row:hover { background: var(--hover); }
   .picker .row.hidden { display: none; }
   .picker .row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker .row .p {
+    flex-shrink: 0; max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--muted); font-size: 10px; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--border);
+  }
   .picker .row .d { color: var(--muted); font-size: 10px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
   .picker .sentinel { padding: 7px 0; text-align: center; color: var(--muted); font-size: 11px; }
   .picker .sentinel:empty { padding: 0; }
@@ -478,12 +484,14 @@ export function mountPanel(cb: PanelCallbacks): void {
   fab.setAttribute('aria-haspopup', 'dialog')
   fab.setAttribute('aria-expanded', 'false')
   // 关闭态 = 下载图标；打开态 = 向下箭头（收起面板），两层交叉淡出
+  // pi-lens-ignore: ast-grep:no-inner-html, no-inner-html
   fab.innerHTML = `<span class="ic ic-dl">${ICON_DOWNLOAD}</span><span class="ic ic-arrow">${ICON_ARROW_DOWN}</span>`
 
   const panel = document.createElement('div')
   panel.className = 'panel'
   panel.setAttribute('role', 'dialog')
   panel.setAttribute('aria-label', '导出对话')
+  // pi-lens-ignore: ast-grep:no-inner-html, no-inner-html
   panel.innerHTML = `
     <div class="head">导出对话</div>
 
@@ -838,7 +846,8 @@ export function mountPanel(cb: PanelCallbacks): void {
       for (const item of items) {
         const row = document.createElement('label')
         row.className = 'row'
-        row.title = item.title
+        // title 属性兼任 tooltip 与搜索词源，带上 project 名才能搜到项目下的会话
+        row.title = item.project ? `${item.title}（${item.project}）` : item.title
         const box = document.createElement('input')
         box.type = 'checkbox'
         box.dataset['id'] = item.id
@@ -848,7 +857,14 @@ export function mountPanel(cb: PanelCallbacks): void {
         const d = document.createElement('span')
         d.className = 'd'
         d.textContent = item.updated
-        row.append(box, t, d)
+        if (item.project) {
+          const p = document.createElement('span')
+          p.className = 'p'
+          p.textContent = item.project
+          row.append(box, t, p, d)
+        } else {
+          row.append(box, t, d)
+        }
         // 始终插在哨兵之前，哨兵保持在列表末尾
         sentinel.before(row)
       }
