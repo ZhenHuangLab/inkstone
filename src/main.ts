@@ -57,8 +57,8 @@ mountPanel({
   onExport(scope, format, ids, panel, opts) {
     void dispatchExport(scope, format, ids, panel, opts)
   },
-  onPickList(panel) {
-    void loadPickList(panel)
+  onPickList(panel, source) {
+    void loadPickList(panel, source)
   },
   onPickMore(panel) {
     void loadNextPage(panel)
@@ -112,7 +112,7 @@ async function dispatchExport(
  * 重置分页并拉第一页。注意这里**不碰** activeCancel / panel.finish()——
  * 懒加载不占用「运行中」状态，取消按钮只属于导出流程。
  */
-async function loadPickList(panel: PanelHandle): Promise<void> {
+async function loadPickList(panel: PanelHandle, source: string): Promise<void> {
   const gen = ++pagerGen
   pager = null
   pickedList = []
@@ -121,7 +121,13 @@ async function loadPickList(panel: PanelHandle): Promise<void> {
     panel.setStatus('获取登录态…')
     const token = await getAccessToken()
     if (gen !== pagerGen) return
-    pager = createConversationPager(token)
+    pager = createConversationPager(token, undefined, source)
+    // 来源下拉的 project 选项后台补上，不阻塞第一页；拿不到就只留「全部/主列表」
+    void listProjects(token)
+      .then((ps) => {
+        if (gen === pagerGen) panel.setPickerProjects(ps)
+      })
+      .catch(() => {})
     panel.setStatus('拉取对话列表…')
     await loadNextPage(panel, gen)
   } catch (e) {

@@ -54,6 +54,8 @@ export interface PanelHandle {
   appendPicker(items: PickerItem[], done: boolean): void
   /** 清空多选列表（重新拉取前调用） */
   clearPicker(): void
+  /** 填「来源」下拉里的 project 选项（当前选中项会保留） */
+  setPickerProjects(projects: { id: string; name: string }[]): void
   /** 某一页拉取失败：解除加载中状态，允许再次触发 */
   pickerLoadFailed(): void
 }
@@ -67,8 +69,11 @@ export interface PanelCallbacks {
     panel: PanelHandle,
     opts: ExportOptions,
   ): void
-  /** 首次切到「选择」或点重新拉取：回调负责重置分页并拉第一页 */
-  onPickList(panel: PanelHandle): void
+  /**
+   * 首次切到「选择」/ 点重新拉取 / 切换「来源」：回调负责重置分页并拉第一页。
+   * source 为 `all` / `main` / project 的 gizmo id。
+   */
+  onPickList(panel: PanelHandle, source: string): void
   /** 列表滚到底部：回调负责拉下一页并调用 panel.appendPicker */
   onPickMore(panel: PanelHandle): void
   onCancel(): void
@@ -227,9 +232,18 @@ const STYLE = `
 
   .picker { display: none; margin-top: 8px; }
   .picker.open { display: block; }
+  .picker .srcrow { display: flex; gap: 4px; margin-bottom: 6px; }
+  .picker select.src {
+    flex-shrink: 0; max-width: 108px; padding: 6px 7px; border: 1px solid var(--border);
+    border-radius: 8px; font-size: 12px; background: transparent; color: var(--fg);
+    outline: none; cursor: pointer; transition: border-color .15s var(--ease);
+  }
+  .picker select.src:focus { border-color: var(--accent); }
+  /* 弹出的 option 在系统层渲染，不继承面板的透明背景，得给实色 */
+  .picker select.src option { background: Canvas; color: CanvasText; }
   .picker input[type="search"] {
-    width: 100%; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
-    font-size: 12px; margin-bottom: 6px; background: transparent; color: var(--fg); outline: none;
+    flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12px; background: transparent; color: var(--fg); outline: none;
     transition: border-color .15s var(--ease);
   }
   .picker input[type="search"]::placeholder { color: var(--muted); }
@@ -502,7 +516,13 @@ export function mountPanel(cb: PanelCallbacks): void {
       <button data-v="selection" aria-pressed="false">选择…</button>
     </div>
     <div class="picker">
-      <input type="search" placeholder="搜索标题过滤…" aria-label="搜索标题过滤">
+      <div class="srcrow">
+        <select class="src" aria-label="列表来源">
+          <option value="all">全部</option>
+          <option value="main">主列表</option>
+        </select>
+        <input type="search" placeholder="搜索标题过滤…" aria-label="搜索标题过滤">
+      </div>
       <div class="tools">
         <button data-sel="all">全选</button>
         <button data-sel="invert">反选</button>
@@ -689,6 +709,7 @@ export function mountPanel(cb: PanelCallbacks): void {
   const pickerList = pickerEl.querySelector<HTMLDivElement>('.list')!
   const sentinel = pickerList.querySelector<HTMLDivElement>('.sentinel')!
   const pickerSearch = pickerEl.querySelector<HTMLInputElement>('input[type="search"]')!
+  const pickerSrc = pickerEl.querySelector<HTMLSelectElement>('select.src')!
   const pickerEmpty = pickerEl.querySelector<HTMLDivElement>('.empty')!
   const pickerCount = pickerEl.querySelector<HTMLSpanElement>('.count')!
   const segButtons = [...panel.querySelectorAll<HTMLButtonElement>('.seg button')]
@@ -878,6 +899,19 @@ export function mountPanel(cb: PanelCallbacks): void {
       // 需要主动续拉，否则懒加载会停在第一页。
       if (!done) queueMicrotask(maybeAutoFill)
     },
+    setPickerProjects: (projects) => {
+      // 「全部」「主列表」两个固定项之后全量重建 project 选项，选中项按 value 复原
+      const keep = pickerSrc.value
+      while (pickerSrc.options.length > 2) pickerSrc.remove(2)
+      for (const p of projects) {
+        const opt = document.createElement('option')
+        opt.value = p.id
+        opt.textContent = p.name
+        pickerSrc.add(opt)
+      }
+      // 项目被删掉时选中项会消失，退回「全部」——但不重拉，列表内容仍是有效的
+      pickerSrc.value = [...pickerSrc.options].some((o) => o.value === keep) ? keep : 'all'
+    },
     clearPicker: () => {
       for (const r of rows()) r.remove()
       listLoaded = false
@@ -922,14 +956,16 @@ export function mountPanel(cb: PanelCallbacks): void {
 
   sentinel.addEventListener('click', requestMore)
 
-  /** 重置并拉第一页（首次进入「选择」/ 点重新拉取按钮） */
+  /** 重置并拉第一页（首次进入「选择」/ 点重新拉取 / 切换来源） */
   function loadList(): void {
     handle.clearPicker()
     pickerSearch.value = ''
     listLoading = true
     sentinel.textContent = '加载中…'
-    cb.onPickList(handle)
+    cb.onPickList(handle, pickerSrc.value)
   }
+
+  pickerSrc.addEventListener('change', loadList)
 
   for (const btn of segButtons) {
     btn.addEventListener('click', () => {

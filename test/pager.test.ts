@@ -162,6 +162,38 @@ describe('createConversationPager · projects', () => {
     expect(projectNameOf('g-p-b')).toBe('项目乙')
   }, 20_000)
 
+  test('source=main 只翻主列表，不碰 gizmos 接口', async () => {
+    const mock = mockApi({
+      main: (call) => (call.offset === 0 ? { items: items(2, 40) } : { items: [] }),
+      projects: [{ id: 'g-p-x', name: '不该被拉到' }],
+      pages: { 'g-p-x': [items(1, 50)] },
+    })
+
+    const all = await drain(createConversationPager('tok', undefined, 'main'))
+
+    expect(all.map((i) => i.id)).toEqual(['c40', 'c41'])
+    expect(mock.paths.every((p) => p === '/backend-api/conversations')).toBe(true)
+  }, 20_000)
+
+  test('source=<gizmo id> 直奔该 project，不碰主列表也不拉侧栏', async () => {
+    const mock = mockApi({
+      main: () => ({ items: items(2, 60) }),
+      projects: [{ id: 'g-p-solo', name: '项目丁' }],
+      pages: { 'g-p-solo': [items(2, 70), items(1, 72)] },
+    })
+
+    const all = await drain(createConversationPager('tok', undefined, 'g-p-solo'))
+
+    expect(all.map((i) => i.id)).toEqual(['c70', 'c71', 'c72'])
+    expect(all.every((i) => i.gizmo_id === 'g-p-solo')).toBe(true)
+    // 选定单个 project 时连 project 列表都不用拉
+    expect(mock.paths).toEqual([
+      '/backend-api/gizmos/g-p-solo/conversations',
+      '/backend-api/gizmos/g-p-solo/conversations',
+    ])
+    expect(mock.mainCalls).toHaveLength(0)
+  }, 20_000)
+
   test('跨源重复的 id 只交出一次，且不会把整页重复当成到底', async () => {
     mockApi({
       main: (call) => (call.offset === 0 ? { items: items(2) } : { items: [] }),

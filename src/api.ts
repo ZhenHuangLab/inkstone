@@ -189,19 +189,32 @@ export interface ConversationPager {
   next(): Promise<{ items: ConversationListItem[]; done: boolean }>
 }
 
+/** 分页来源：`all` 全部 / `main` 仅主列表 / 其余按 gizmo id 视为单个 project。 */
+export const SOURCE_ALL = 'all'
+export const SOURCE_MAIN = 'main'
+
 /**
  * 多源惰性分页器：先翻主列表（offset），翻完再逐个 project 翻（字符串游标）。
+ * source 可把范围收窄到单一来源（面板上的「来源」下拉）；指定单个 project 时
+ * 连 project 列表都不用拉，直接翻它自己的会话。
  * 跨源按 id 去重（主列表哪天开始包含 project 会话也不会重复导出）。
  * 主列表的终止条件只认空页（服务端会按自己的上限截页，短页不代表到底），且
  * 列表索引实测会瞬时降级提前返回空页，所以空页要隔几秒重试，连续空 3 次才算到底。
  */
-export function createConversationPager(token: string, cancel?: CancelToken): ConversationPager {
+export function createConversationPager(
+  token: string,
+  cancel?: CancelToken,
+  source: string = SOURCE_ALL,
+): ConversationPager {
+  const onlyProject = source === SOURCE_ALL || source === SOURCE_MAIN ? null : source
   const seen = new Set<string>()
   let offset = 0
   let limit = 100
   let emptyRetries = 0
-  let mainDone = false
-  let projects: ProjectInfo[] | null = null
+  // 选单个 project 时直接跳过主列表；选主列表时 projectIds 置空跳过 project 阶段
+  let mainDone = onlyProject != null
+  let projectIds: string[] | null = source === SOURCE_MAIN ? [] : null
+  if (onlyProject != null) projectIds = [onlyProject]
   let projectIdx = 0
   let cursor = '0'
   let done = false
@@ -236,11 +249,11 @@ export function createConversationPager(token: string, cancel?: CancelToken): Co
   }
 
   /** 当前 project 的一页；null = 该 project 已翻完且本页无内容 */
-  async function projectPage(project: ProjectInfo): Promise<ConversationListItem[] | null> {
+  async function projectPage(gizmoId: string): Promise<ConversationListItem[] | null> {
     ensureAlive(cancel)
-    const page = await listProjectConversationsPage(token, project.id, cursor, cancel)
+    const page = await listProjectConversationsPage(token, gizmoId, cursor, cancel)
     // gizmos 接口的条目不保证带 gizmo_id，补上才能在下游认出归属
-    const items = (page.items ?? []).map((i) => ({ ...i, gizmo_id: i.gizmo_id ?? project.id }))
+    const items = (page.items ?? []).map((i) => ({ ...i, gizmo_id: i.gizmo_id ?? gizmoId }))
     const nextCursor = page.cursor ?? null
     if (nextCursor == null) {
       projectIdx++
@@ -260,13 +273,13 @@ export function createConversationPager(token: string, cancel?: CancelToken): Co
           batch = await mainPage()
           if (batch == null) mainDone = true
         } else {
-          projects ??= await listProjects(token, cancel)
-          const project = projects[projectIdx]
-          if (project == null) {
+          projectIds ??= (await listProjects(token, cancel)).map((p) => p.id)
+          const gizmoId = projectIds[projectIdx]
+          if (gizmoId == null) {
             done = true
             return { items: [], done: true }
           }
-          batch = await projectPage(project)
+          batch = await projectPage(gizmoId)
         }
         if (batch == null) continue
         // offset 翻页 + order=updated 期间列表会漂移，加上跨源重叠，统一在这里去重；
