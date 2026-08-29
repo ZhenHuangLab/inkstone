@@ -22,7 +22,11 @@ interface Ctx {
   canvas: Map<string, CanvasOp>
 }
 
-export function conversationToIR(conv: ConversationDetail, fallbackId = ''): IRConversation {
+export function conversationToIR(
+  conv: ConversationDetail,
+  fallbackId = '',
+  projectName?: string,
+): IRConversation {
   const convId = String(conv.conversation_id ?? conv.id ?? fallbackId)
   const title = (conv.title ?? '').trim() || 'Untitled'
   const messages = linearize(conv)
@@ -56,12 +60,15 @@ export function conversationToIR(conv: ConversationDetail, fallbackId = ''): IRC
       `https://chatgpt.com/c/${branchMeta.branching_from_conversation_id}`,
     ])
   }
+  if (projectName) extra.unshift(['project', yamlQuote(projectName)])
+
+  const gizmoId = conv.gizmo_id ?? null
 
   return {
     source: 'chatgpt',
     id: convId,
     title,
-    url: `https://chatgpt.com/c/${convId}`,
+    url: `https://chatgpt.com${gizmoId ? `/g/${gizmoId}` : ''}/c/${convId}`,
     created: toIso(conv.create_time),
     updated: toIso(conv.update_time),
     model: model || undefined,

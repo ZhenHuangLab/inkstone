@@ -18,6 +18,15 @@ describe('conversationToMarkdown', () => {
     expect(markdown).toContain('tags:\n  - chatgpt')
   })
 
+  test('project 会话使用 gizmo 地址并写入 project 名', () => {
+    const conv = { ...fixture, gizmo_id: 'g-p-project' }
+    const { markdown: md } = conversationToMarkdown(conv, '', { projectName: '研究计划' })
+    expect(md).toContain(
+      'url: https://chatgpt.com/g/g-p-project/c/abc12345-6789-4def-8012-3456789abcde',
+    )
+    expect(md).toContain('project: "研究计划"')
+  })
+
   test('User / ChatGPT 作为最高级标题', () => {
     expect(markdown).toContain('\n# User\n')
     expect(markdown).toContain('\n# ChatGPT\n')

@@ -1,10 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import { ApiError } from '../src/core/fetcher'
-import { createConversationPager, type FetchPage } from '../src/sites/claude/api'
+import {
+  createConversationPager,
+  listAllConversations,
+  resolveOrgId,
+  type FetchPage,
+} from '../src/sites/claude/api'
 import type { ClaudeConversationListItem } from '../src/sites/claude/types'
 
 // api.ts 拼 URL 要用 location.origin，bun 环境里补一个
 ;(globalThis as unknown as { location: { origin: string } }).location = { origin: 'https://claude.ai' }
+;(globalThis as unknown as { document: { cookie: string } }).document = { cookie: 'lastActiveOrg=org-from-cookie' }
 
 const items = (n: number, from = 0): ClaudeConversationListItem[] =>
   Array.from({ length: n }, (_, i) => ({ uuid: `c${from + i}` }))
@@ -96,5 +102,61 @@ describe('claude 分页器', () => {
     const again = await pager.next()
     expect(again).toEqual({ items: [], done: true })
     expect(calls.length).toBe(1)
+  })
+
+  test('listAll 复用同一分页器并逐页报告进度', async () => {
+    const { fetchPage } = pages(({ offset }) => (offset < 60 ? items(30, offset) : []))
+    const progress: number[] = []
+    const all = await listAllConversations('org', (n) => progress.push(n), undefined, {
+      fetchPage,
+      emptyRetryBaseMs: 0,
+    })
+    expect(all).toHaveLength(60)
+    expect(progress).toEqual([30, 60])
+  })
+
+  test('进度回调触发风控异常时立即停止继续翻页', async () => {
+    const { calls, fetchPage } = pages(({ offset }) => items(5, offset))
+    await expect(
+      listAllConversations(
+        'org',
+        () => {
+          throw new Error('stop-by-risk-guard')
+        },
+        undefined,
+        { fetchPage, emptyRetryBaseMs: 0 },
+      ),
+    ).rejects.toThrow('stop-by-risk-guard')
+    expect(calls).toHaveLength(1)
+  })
+
+  test('分页请求超过安全上限时停止，不继续空转', async () => {
+    const { calls, fetchPage } = pages(({ offset }) => items(5, offset))
+    const pager = createConversationPager('org', undefined, {
+      fetchPage,
+      emptyRetryBaseMs: 0,
+      maxRequests: 2,
+    })
+    await pager.next()
+    await pager.next()
+    await expect(pager.next()).rejects.toThrow('分页请求已达安全上限')
+    expect(calls).toHaveLength(2)
+  })
+
+  test('累计条目超过安全上限时停止', async () => {
+    const { fetchPage } = pages(({ offset }) => items(5, offset))
+    const pager = createConversationPager('org', undefined, {
+      fetchPage,
+      emptyRetryBaseMs: 0,
+      maxItems: 8,
+    })
+    await pager.next()
+    await expect(pager.next()).rejects.toThrow('对话数已超过安全上限')
+  })
+})
+
+describe('Claude 会话准备', () => {
+  test('已取消时不能吞掉取消异常并回退 cookie 继续执行', async () => {
+    await expect(resolveOrgId({ cancelled: true })).rejects.toThrow('已取消')
   })
 })

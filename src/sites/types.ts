@@ -3,6 +3,7 @@
 
 import type { AssetRef, IRConversation } from '../core/ir'
 import type { CancelToken, FetchStats } from '../core/fetcher'
+import type { BatchPolicy } from '../core/batch-safety'
 
 export type SiteId = 'chatgpt' | 'claude'
 
@@ -37,6 +38,8 @@ export interface SiteConversationItem {
   id: string
   title: string
   update_time: string | number | null
+  /** 列表里的来源标签；ChatGPT 用 project 名，其他站点可缺省。 */
+  project?: string
 }
 
 export interface SitePager {
@@ -46,12 +49,17 @@ export interface SitePager {
 
 /** 批量导出能力。supportsBatch 为 true 时必须提供。 */
 export interface SiteBatch {
+  /** 站点专属风控；编排层不得自行猜测未知站点可承受的并发与重试。 */
+  policy: BatchPolicy
   listAll(
     session: string,
     onProgress?: (fetched: number) => void,
     cancel?: CancelToken,
   ): Promise<SiteConversationItem[]>
-  createPager(session: string, cancel?: CancelToken): SitePager
+  /** 可选的来源列表；缺省时 UI 只展示站点的统一列表。 */
+  listSources?(session: string, cancel?: CancelToken): Promise<Array<{ id: string; name: string }>>
+  /** source 缺省或为 all 时覆盖所有来源，其余值由站点自行解释。 */
+  createPager(session: string, cancel?: CancelToken, source?: string): SitePager
 }
 
 export interface SiteAdapter {
@@ -60,7 +68,7 @@ export interface SiteAdapter {
   label: string
   /**
    * 是否开放批量 / 全量导出。
-   * Claude 首版为 false：限流画像尚无实测数据，先只做当前对话。
+   * 开放前必须同时提供 batch 实现和站点级风控策略。
    */
   supportsBatch: boolean
   /** 当前页面是否属于这个站点 */

@@ -30,7 +30,8 @@ export const CLAUDE_THROTTLE: ThrottleConfig = {
   spacingMaxMs: 8000,
   restEveryN: 40,
   restDurationMs: 30_000,
-  maxAttempts: 6,
+  // 首次失败后最多再试一次；批量层随后依据完整 429 统计决定是否熔断。
+  maxAttempts: 1,
 }
 
 const fetcher: Fetcher = createFetcher(CLAUDE_THROTTLE)
@@ -54,6 +55,7 @@ export async function resolveOrgId(cancel?: CancelToken): Promise<string> {
     const uuid = list.find((o) => typeof o?.uuid === 'string')?.uuid
     if (uuid) return uuid
   } catch {
+    ensureAlive(cancel)
     /* 落到 cookie 兜底 */
   }
   const fromCookie = /(?:^|;\s*)lastActiveOrg=([^;]+)/.exec(document.cookie)?.[1]
@@ -114,9 +116,7 @@ export async function listSandboxFiles(
   })
 }
 
-// ——— 以下是批量导出的地基，当前版本的 UI 不暴露 ———
-// 单对话导出只需要上面两个端点。列表接口先按分页写好（形状与 ChatGPT 侧一致，
-// 便于后续复用同一套编排），但在限流画像实测清楚之前不接进界面。
+// ——— 批量导出列表 —— 与 ChatGPT 共用编排，但使用 Claude 专属的保守节奏与熔断。———
 
 export async function listConversationsPage(
   orgId: string,
@@ -129,7 +129,12 @@ export async function listConversationsPage(
   const data: unknown = await res.json()
   // [待测] 分页参数是否被服务端认。若不认，这里会一次性拿回全部——调用方靠
   // 「返回数 < limit」判断到底会误判，所以终止条件同样只认空页。
-  return Array.isArray(data) ? (data as ClaudeConversationListItem[]) : []
+  if (Array.isArray(data)) return data as ClaudeConversationListItem[]
+  if (data && typeof data === 'object') {
+    const nested = (data as { chat_conversations?: unknown }).chat_conversations
+    if (Array.isArray(nested)) return nested as ClaudeConversationListItem[]
+  }
+  throw new Error('Claude 对话列表结构已变化：预期数组')
 }
 
 export interface ConversationPager {
@@ -148,6 +153,10 @@ export interface PagerOptions {
   fetchPage?: FetchPage
   /** 空页重试的等待基数（第 n 次等 n 倍）；设 0 即不等待 */
   emptyRetryBaseMs?: number
+  /** 单个分页器最多发出的列表请求数，防接口忽略 offset 或结构漂移后空转。 */
+  maxRequests?: number
+  /** 单个分页器最多接收的去重对话数。 */
+  maxItems?: number
 }
 
 export function createConversationPager(
@@ -157,10 +166,13 @@ export function createConversationPager(
 ): ConversationPager {
   const fetchPage = opts.fetchPage ?? listConversationsPage
   const emptyRetryBaseMs = opts.emptyRetryBaseMs ?? 4000
+  const maxRequests = opts.maxRequests ?? 250
+  const maxItems = opts.maxItems ?? 10_000
   let offset = 0
   let limit = 50
   let emptyRetries = 0
   let done = false
+  let requests = 0
   const seen = new Set<string>()
 
   return {
@@ -168,6 +180,10 @@ export function createConversationPager(
       if (done) return { items: [], done: true }
       for (;;) {
         ensureAlive(cancel)
+        if (requests >= maxRequests) {
+          throw new Error(`Claude 列表分页请求已达安全上限（${maxRequests} 次），已停止以防空转`)
+        }
+        requests++
         let items: ClaudeConversationListItem[]
         try {
           items = await fetchPage(orgId, offset, limit, cancel)
@@ -193,10 +209,15 @@ export function createConversationPager(
 
         // 有返回、但全是见过的：要么服务端忽略了分页参数每次给同一批，要么已到底。
         // 两种都不该重试——再问一次只会拿到同样的东西。
-        const fresh = items.filter((i) => typeof i?.uuid === 'string' && !seen.has(i.uuid))
+        const valid = items.filter((i) => typeof i?.uuid === 'string' && i.uuid !== '')
+        if (valid.length === 0) throw new Error('Claude 对话列表结构已变化：返回条目缺少 uuid')
+        const fresh = valid.filter((i) => !seen.has(i.uuid))
         if (fresh.length === 0) {
           done = true
           return { items: [], done: true }
+        }
+        if (seen.size + fresh.length > maxItems) {
+          throw new Error(`Claude 对话数已超过安全上限（${maxItems} 条），已停止本次列表拉取`)
         }
         for (const i of fresh) seen.add(i.uuid)
 
@@ -205,6 +226,23 @@ export function createConversationPager(
         return { items: fresh, done: false }
       }
     },
+  }
+}
+
+/** 全量列表与选择器共用同一套去重、空页确认和安全上限。 */
+export async function listAllConversations(
+  orgId: string,
+  onProgress?: (fetched: number) => void,
+  cancel?: CancelToken,
+  opts: PagerOptions = {},
+): Promise<ClaudeConversationListItem[]> {
+  const pager = createConversationPager(orgId, cancel, opts)
+  const all: ClaudeConversationListItem[] = []
+  for (;;) {
+    const { items, done } = await pager.next()
+    all.push(...items)
+    if (items.length > 0) onProgress?.(all.length)
+    if (done) return all
   }
 }
 

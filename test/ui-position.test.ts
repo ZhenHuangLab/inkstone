@@ -37,4 +37,17 @@ describe('computeFabPlacement', () => {
       ),
     ).toEqual({ right: 110, bottom: 945, panelTop: 48 })
   })
+
+  test('Claude 首页 header 贴在隐身模式动作槽左侧', () => {
+    // /new 实测：#dframe-header-actions-slot = x 578–610、y 8–40，viewport 630×898。
+    expect(
+      computeFabPlacement(
+        'header',
+        { top: 8, right: 610, bottom: 40, left: 578, height: 32 },
+        { width: 630, height: 898 },
+        28,
+        8,
+      ),
+    ).toEqual({ right: 60, bottom: 860, panelTop: 50 })
+  })
 })

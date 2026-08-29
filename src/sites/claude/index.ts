@@ -1,23 +1,29 @@
 import type { AssetRef } from '../../core/ir'
 import type { CancelToken } from '../../core/fetcher'
-import type { AssetPayload, Rgb, SiteAdapter } from '../types'
+import type { AssetPayload, Rgb, SiteAdapter, SiteConversationItem } from '../types'
 import {
+  createConversationPager,
   currentConversationId,
   fetchBinary,
   fetchConversation,
+  listAllConversations,
   listSandboxFiles,
   resolveOrgId,
   throttleStats,
 } from './api'
 import { conversationToIR } from './convert'
-import type { ClaudeConversation, ClaudeIRContext } from './types'
+import type { ClaudeConversation, ClaudeConversationListItem, ClaudeIRContext } from './types'
+
+const toItem = (item: ClaudeConversationListItem): SiteConversationItem => ({
+  id: item.uuid,
+  title: item.name ?? '',
+  update_time: item.updated_at ?? null,
+})
 
 export const claudeAdapter: SiteAdapter = {
   id: 'claude',
   label: 'Claude',
-  // 首版只做「导出当前对话」。批量的地基（分页器、水位线、并发池）都在，
-  // 但在 Claude 的限流画像实测清楚之前不开——见 sites/claude/api.ts 的说明。
-  supportsBatch: false,
+  supportsBatch: true,
 
   matches: () => /(^|\.)claude\.ai$/.test(location.hostname),
 
@@ -61,13 +67,43 @@ export const claudeAdapter: SiteAdapter = {
 
   throttleStats,
 
+  batch: {
+    // Claude 限流画像仍未知：单并发、不做整批二次重试；一旦出现明确的全局
+    // Retry-After 或累计 3 次 429，立刻保护性中止，未完成条目留给下次增量补齐。
+    policy: {
+      concurrency: 1,
+      retryFailed: false,
+      retryDelayMs: 0,
+      failureAbortMin: 5,
+      failureAbortRatio: 0.25,
+      max429Hits: 3,
+      maxRetryAfterHits: 1,
+      maxRequests: 1000,
+    },
+    async listAll(session, onProgress, cancel) {
+      return (await listAllConversations(session, onProgress, cancel)).map(toItem)
+    },
+    createPager(session, cancel) {
+      const pager = createConversationPager(session, cancel)
+      return {
+        async next() {
+          const { items, done } = await pager.next()
+          return { items: items.map(toItem), done }
+        },
+      }
+    },
+  },
+
   ui: {
     // 2026-08-28 真实会话页实测：Files + Share 外层是 actions-group。锚定整个组的
-    // 左边界才不会盖住 Files；旧选择器继续留作回退，兼容 Claude 的灰度发布。
+    // 左边界才不会盖住 Files。2026-08-29 首页 /new 没有 wiggle 控件，但有稳定的
+    // dframe-header-actions-slot（当前承载隐身模式按钮），同样锚定整组左边界。
+    // 旧选择器继续留作回退，兼容 Claude 的灰度发布。
     headerAnchor: () =>
       (document.querySelector('[data-testid="wiggle-controls-actions-group"]') ??
         document.querySelector('[data-testid="wiggle-controls-actions"]') ??
         document.querySelector('[data-testid="wiggle-controls-actions-share"]') ??
+        document.querySelector('#dframe-header-actions-slot') ??
         document.querySelector('[data-testid="share-button"]') ??
         document.querySelector('[data-testid="chat-menu-trigger"]') ??
         document.querySelector('header button[aria-haspopup="menu"]') ??
@@ -96,15 +132,11 @@ export const claudeAdapter: SiteAdapter = {
 
     themeAttributes: ['class', 'data-mode', 'data-theme'],
 
-    // [待测] Claude 的主色变量名未确认。先试几个常见命名，命中不了就返回 null，
-    // 交给界面层的通用兜底（扫描含 accent 的自定义属性，取最饱和的那个）。
-    accent(parse: (raw: string) => Rgb | null) {
-      const cs = getComputedStyle(document.documentElement)
-      for (const name of ['--accent-main-000', '--accent-main-100', '--accent-brand', '--brand']) {
-        const bg = parse(cs.getPropertyValue(name))
-        if (bg) return { bg, fg: null, ring: null }
-      }
-      return null
+    // 与 Claude 星形图标接近的品牌珊瑚橙。Claude 页面没有稳定公开的 accent 变量，
+    // 固定色比扫描任意同名 CSS 变量更可预测；前景色仍交给通用层按对比度选择。
+    accent(_parse: (raw: string) => Rgb | null) {
+      const brandOrange: Rgb = [217, 119, 87] // #D97757
+      return { bg: brandOrange, fg: null, ring: brandOrange }
     },
   },
 }

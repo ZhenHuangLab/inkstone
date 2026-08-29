@@ -42,6 +42,15 @@ export interface CancelToken {
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 export const jitter = (base: number, spread = base): number => base + Math.random() * spread
 
+/** Retry-After 允许秒数或 HTTP-date；两种都归一成剩余秒数。 */
+export function parseRetryAfterSeconds(raw: string | null, now = Date.now()): number {
+  if (raw == null || raw.trim() === '') return 0
+  const seconds = Number(raw)
+  if (Number.isFinite(seconds) && seconds > 0) return seconds
+  const at = Date.parse(raw)
+  return Number.isFinite(at) && at > now ? Math.ceil((at - now) / 1000) : 0
+}
+
 export function ensureAlive(cancel?: CancelToken): void {
   if (cancel?.cancelled) throw new CancelledError()
 }
@@ -134,22 +143,27 @@ export function createFetcher(cfg: ThrottleConfig): Fetcher {
         return res
       }
       const retryable = res.status === 429 || res.status >= 500
-      if (!retryable || attempt >= cfg.maxAttempts) {
-        throw new ApiError(res.status, `HTTP ${res.status}: ${url}`)
-      }
+      let retryAfterMs = 0
       if (res.status === 429) {
+        // 即使本次已经没有重试额度，也要先记录；上层批量熔断依赖完整统计。
         hits429++
         global429Streak++
         slowDown()
-        const retryAfterSec = Number(res.headers.get('retry-after'))
-        const retryAfterMs = retryAfterSec * 1000
+        const retryAfterSec = parseRetryAfterSeconds(res.headers.get('retry-after'))
+        retryAfterMs = retryAfterSec * 1000
         if (retryAfterMs > 0) {
           retryAfterHits++
           maxRetryAfterSec = Math.max(maxRetryAfterSec, retryAfterSec)
           cooldownUntil = Math.max(cooldownUntil, Date.now() + retryAfterMs)
         } else if (global429Streak >= 5) {
           cooldownUntil = Math.max(cooldownUntil, Date.now() + 15_000)
-        } else {
+        }
+      }
+      if (!retryable || attempt >= cfg.maxAttempts) {
+        throw new ApiError(res.status, `HTTP ${res.status}: ${url}`)
+      }
+      if (res.status === 429) {
+        if (retryAfterMs <= 0 && global429Streak < 5) {
           headerless429s++
           if (headerless429s > 1) throw new ApiError(429, `HTTP 429（条目级，快速放弃）: ${url}`)
           await sleep(jitter(delay))

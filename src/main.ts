@@ -6,6 +6,11 @@ import {
   sleep,
   type CancelToken,
 } from './core/fetcher'
+import {
+  BatchSafetyError,
+  createBatchSafetyGuard,
+  failureLimitReached,
+} from './core/batch-safety'
 import type { AssetRef } from './core/ir'
 import {
   assetLink,
@@ -64,13 +69,18 @@ if (detected) {
 
 function mount(): void {
   mountPanel({
-    site: { id: site.id, label: site.label, supportsBatch: site.supportsBatch },
+    site: {
+      id: site.id,
+      label: site.label,
+      supportsBatch: site.supportsBatch,
+      supportsSources: site.batch?.listSources != null,
+    },
     siteUi: site.ui,
     onExport(scope, format, ids, panel, opts) {
       void dispatchExport(scope, format, ids, panel, opts)
     },
-    onPickList(panel) {
-      void loadPickList(panel)
+    onPickList(panel, source) {
+      void loadPickList(panel, source)
     },
     onPickMore(panel) {
       void loadNextPage(panel)
@@ -131,7 +141,7 @@ async function dispatchExport(
  * 重置分页并拉第一页。注意这里**不碰** activeCancel / panel.finish()——
  * 懒加载不占用「运行中」状态，取消按钮只属于导出流程。
  */
-async function loadPickList(panel: PanelHandle): Promise<void> {
+async function loadPickList(panel: PanelHandle, source: string): Promise<void> {
   const gen = ++pagerGen
   pager = null
   pickedList = []
@@ -140,7 +150,16 @@ async function loadPickList(panel: PanelHandle): Promise<void> {
     panel.setStatus('获取登录态…')
     const session = await site.prepare()
     if (gen !== pagerGen) return
-    pager = site.batch!.createPager(session)
+    pager = site.batch!.createPager(session, undefined, source)
+    // 来源选项后台补齐，不阻塞第一页；不支持来源筛选的站点保持固定选项。
+    if (site.batch!.listSources) {
+      void site.batch!
+        .listSources(session)
+        .then((sources) => {
+          if (gen === pagerGen) panel.setPickerProjects(sources)
+        })
+        .catch(() => {})
+    }
     panel.setStatus('拉取对话列表…')
     await loadNextPage(panel, gen)
   } catch (e) {
@@ -165,6 +184,7 @@ async function loadNextPage(panel: PanelHandle, gen: number = pagerGen): Promise
       id: i.id,
       title: i.title,
       updated: shortDate(i.update_time),
+      project: i.project,
     }))
     panel.appendPicker(picked, done)
     panel.setStatus(
@@ -196,8 +216,10 @@ async function exportSelection(
       return
     }
     panel.setStatus('获取登录态…')
+    const checkBatchSafety = createBatchSafetyGuard(site.batch!.policy, site.throttleStats)
     const session = await site.prepare(cancel)
-    await exportItems(format, items, 0, session, cancel, panel, opts, sink)
+    checkBatchSafety()
+    await exportItems(format, items, 0, session, cancel, panel, opts, sink, checkBatchSafety)
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
   } finally {
@@ -281,6 +303,7 @@ function createProcessor(
   panel: PanelHandle,
   opts: ExportOptions,
   sink: OutputSink,
+  checkBatchSafety?: () => void,
 ) {
   // fileId → 正文替换文本；同一附件跨对话只下载一次
   const assetCache = new Map<string, string>()
@@ -302,7 +325,9 @@ function createProcessor(
       replacement = skippedNote(a, a.sizeBytes!, cap)
     } else {
       try {
+        checkBatchSafety?.()
         const { bytes, filename, contentType } = await site.fetchAsset(session, a, cancel, cap)
+        checkBatchSafety?.()
         const name = assetFileName(a, filename, contentType)
         // 文件落在笔记目录下；标准 Markdown 用相对笔记路径，Wikilink 用 vault 根路径。
         const linkPath = `${attachPrefix}${a.fileId.slice(-8)}-${name}`
@@ -313,6 +338,7 @@ function createProcessor(
         })
       } catch (e) {
         if (e instanceof CancelledError) throw e
+        if (e instanceof BatchSafetyError) throw e
         if (e instanceof SizeLimitError) {
           assetsSkipped++
           replacement = skippedNote(a, e.actualBytes, cap)
@@ -339,7 +365,9 @@ function createProcessor(
   }
 
   async function processConversation(item: SiteConversationItem): Promise<{ path: string }> {
+    checkBatchSafety?.()
     const raw = await site.fetchRaw(session, item.id, cancel)
+    checkBatchSafety?.()
     if (kind === 'json') {
       const path = `raw/${item.id}.json`
       await sink.put(path, strToU8(JSON.stringify(raw, null, 2)))
@@ -348,6 +376,7 @@ function createProcessor(
     const irContext = site.fetchIRContext
       ? await site.fetchIRContext(session, item.id, raw, cancel)
       : undefined
+    checkBatchSafety?.()
     const { markdown, title, assets } = renderConversation(site.toIR(raw, item.id, irContext), {
       thoughts: opts.thoughts,
       toolTraces: opts.toolTraces,
@@ -439,15 +468,23 @@ async function startExport(
   const cancel: CancelToken = { cancelled: false }
   activeCancel = cancel
   try {
+    // prepare 也是本批次的网络请求，必须在它之前建立统计基线。
+    const checkBatchSafety = createBatchSafetyGuard(site.batch!.policy, site.throttleStats)
     panel.setStatus('获取登录态…')
     const session = await site.prepare(cancel)
+    checkBatchSafety()
+    // 全量列表本身也会连续请求：从翻第一页前就开始观测，不能等列表拉完才熔断。
 
     panel.setStatus('拉取对话列表…')
     const fullList = await site.batch!.listAll(
       session,
-      (n) => panel.setStatus(`拉取对话列表… 已 ${n} 条`),
+      (n) => {
+        checkBatchSafety()
+        panel.setStatus(`拉取对话列表… 已 ${n} 条`)
+      },
       cancel,
     )
+    checkBatchSafety()
     if (fullList.length === 0) {
       panel.setStatus('没有可导出的对话')
       return
@@ -462,7 +499,7 @@ async function startExport(
     }
     if (skipped > 0) panel.setStatus(`跳过未变化 ${skipped} 条，导出 ${list.length} 条…`)
 
-    await exportItems(kind, list, skipped, session, cancel, panel, opts, sink)
+    await exportItems(kind, list, skipped, session, cancel, panel, opts, sink, checkBatchSafety)
   } catch (e) {
     panel.setStatus(e instanceof CancelledError ? '已取消' : `出错：${String(e)}`)
   } finally {
@@ -481,11 +518,15 @@ async function exportItems(
   panel: PanelHandle,
   opts: ExportOptions,
   sinkIn: OutputSink | null,
+  checkBatchSafetyIn?: () => void,
 ): Promise<void> {
   const sink = sinkIn ?? zipSink()
+  const policy = site.batch!.policy
+  const checkBatchSafety = checkBatchSafetyIn ?? createBatchSafetyGuard(policy, site.throttleStats)
   // 水位线合并推进：导出成功的对话记下 update_time，其余保持原状
   const wmDraft: Watermark = { ...loadWatermark(wmKey(kind)) }
-  const proc = createProcessor(kind, session, cancel, panel, opts, sink)
+  const proc = createProcessor(kind, session, cancel, panel, opts, sink, checkBatchSafety)
+  let safetyReason: string | null = null
 
   // 单条失败不中断，收集后统一重试；失败过多则保护性中止（防止触发/加重账号级反滥用），
   // 已抓取的内容照常落地
@@ -517,7 +558,27 @@ async function exportItems(
         } catch (e) {
           if (e instanceof CancelledError) throw e
           failed.push(item)
-          if (failed.length >= 25 && failed.length > done / 2) aborted = true
+          if (e instanceof BatchSafetyError) {
+            safetyReason = e.message
+            aborted = true
+          } else {
+            try {
+              // 请求本身抛出 429 时，处理器来不及在返回后检查；失败分支补查一次。
+              checkBatchSafety()
+            } catch (risk) {
+              if (risk instanceof BatchSafetyError) {
+                safetyReason = risk.message
+                aborted = true
+              } else {
+                throw risk
+              }
+            }
+            const attempted = done + 1
+            if (failureLimitReached(policy, failed.length, attempted)) {
+              safetyReason = `失败率过高（${failed.length}/${attempted}），已停止后续请求`
+              aborted = true
+            }
+          }
         }
         done++
         panel.setProgress(done, items.length)
@@ -528,17 +589,20 @@ async function exportItems(
     return { failed, untried, aborted }
   }
 
-  const pass1 = await runPass(list, 2, '抓取对话')
+  const pass1 = await runPass(list, policy.concurrency, '抓取对话')
   let failedItems = pass1.failed
   let untriedItems = pass1.untried
   let safetyAborted = pass1.aborted
 
-  if (failedItems.length > 0 && !safetyAborted) {
-    // 大概率是限流长尾：歇口气再用单并发慢速补一遍
-    for (let s = 20; s > 0; s--) {
+  if (failedItems.length > 0 && !safetyAborted && policy.retryFailed) {
+    // 只有经过站点实测、明确允许的适配器才做第二遍；Claude 默认不重试整批失败项。
+    let remainingMs = policy.retryDelayMs
+    while (remainingMs > 0) {
       ensureAlive(cancel)
-      panel.setStatus(`${failedItems.length} 条失败，${s}s 后低速重试…`)
-      await sleep(1000)
+      panel.setStatus(`${failedItems.length} 条失败，${Math.ceil(remainingMs / 1000)}s 后低速重试…`)
+      const waitMs = Math.min(remainingMs, 1000)
+      await sleep(waitMs)
+      remainingMs -= waitMs
     }
     const pass2 = await runPass(failedItems, 1, '重试失败条目')
     failedItems = pass2.failed
@@ -555,7 +619,7 @@ async function exportItems(
     ...untriedItems.map((i) => ({
       id: i.id,
       title: i.title,
-      error: '保护性中止，本次未尝试（下次增量导出会自动补上）',
+      error: `保护性中止，本次未尝试（${safetyReason ?? '失败过多'}；下次增量导出会自动补上）`,
     })),
   ]
   if (failures.length > 0) {
@@ -567,7 +631,7 @@ async function exportItems(
   // 水位线只在产物真正落地后推进：取消/崩溃的运行不记，避免下次增量漏数据
   saveWatermark(wmKey(kind), wmDraft)
   panel.setStatus(
-    `${safetyAborted ? '保护性中止（失败过多，防止触发服务端限制）。' : '完成：'}` +
+    `${safetyAborted ? `保护性中止（${safetyReason ?? '失败过多'}）。` : '完成：'}` +
       `${list.length - failures.length} 个对话，${doneDesc}` +
       (skipped > 0 ? `（另跳过未变化 ${skipped} 条）` : '') +
       (failures.length ? `，${failures.length} 个失败（见 _failures.json）` : '') +

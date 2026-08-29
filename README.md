@@ -36,18 +36,18 @@ Inkstone runs inside the page and fetches conversations through the same backend
 | | ChatGPT | Claude |
 | --- | --- | --- |
 | Export current conversation | ✅ | ✅ |
-| Batch / export-all | ✅ | ⏳ not yet enabled |
-| Incremental sync | ✅ | ⏳ not yet enabled |
+| Batch / export-all | ✅ | ✅ conservative safeguards |
+| Incremental sync | ✅ | ✅ |
 | Rich documents | Canvas patch replay | Artifact fold-up to final version |
 | Thoughts / tool traces | ✅ opt-in | ✅ opt-in |
 | Attachments | images and files downloaded | images, documents, and generated files downloaded; text extractions inlined |
 
-**Why no batch export on Claude yet?** It isn't missing, it's switched off. The pager,
-watermark, concurrency pool and protective abort are all in place and unit-tested — but
-there is no measured rate-limit profile for Claude yet. The ChatGPT numbers only became
-trustworthy after 344 + 432 real conversations. Until comparable evidence exists, the cost
-of a wrong guess lands on your account, and that isn't a call a default-on switch should
-make. See [`docs/claude-adapter-feasibility.md`](./docs/claude-adapter-feasibility.md).
+**Claude batch export uses a separate, deliberately conservative policy.** Its rate-limit
+profile is still not backed by a large real-world sample, so ChatGPT's settings are not
+reused: one worker, spacing from 1500 ms, a 30-second rest every 40 requests, and no second
+pass over failed items. One global `Retry-After` signal, three 429s, 1000 HTTP attempts, or
+an abnormal failure ratio stops the batch. Successful conversations are still written;
+unfinished ones do not advance the watermark and are picked up by the next incremental run.
 
 ## Screenshots
 
@@ -117,10 +117,10 @@ bun run build        # → dist/inkstone.user.js, drag it into Tampermonkey
 
 Open chatgpt.com or claude.ai (logged in) → click the **⤓ button** in the top bar → pick **Markdown zip** or **raw JSON zip** → unzip into your Obsidian vault.
 
-- On Claude only **current conversation** is offered; the batch options are hidden, not disabled
 - The button position is switchable (panel → advanced settings): next to Share in the top bar, or a glass button beside the input box
-- The UI follows the host page's appearance automatically (light/dark + accent color)
+- The UI follows the host page's light/dark appearance; ChatGPT follows its selected accent, while Claude uses its brand orange
 - Exports are cancelable; a single failed conversation never aborts the run — failures are summarized in `_failures.json`
+- Claude batches run with one worker; after a protective abort, wait as instructed instead of restarting immediately
 
 ## Offline CLI
 
@@ -154,7 +154,7 @@ Adding a site means adding an adapter, not touching the orchestration. See `PLAN
 
 ## Roadmap
 
-Batch export on Claude once its rate-limit profile has actually been measured, an MV3 browser extension (no Tampermonkey, store release), and Gemini support. Already done: the multi-site adapter architecture, Claude single-conversation export, incremental sync, direct-write to an Obsidian vault, settings panel, Canvas patch replay, Artifact fold-up, and the offline CLI. Details in [PLAN.md](./PLAN.md) (Chinese).
+An MV3 browser extension (no Tampermonkey, store release) and Gemini support. Already done: the multi-site adapter architecture, Claude batch and incremental export, direct-write to an Obsidian vault, settings panel, Canvas patch replay, Artifact fold-up, and the offline CLI. Details in [PLAN.md](./PLAN.md) (Chinese).
 
 ## License
 

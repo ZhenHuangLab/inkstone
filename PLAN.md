@@ -7,7 +7,7 @@
 ## 目标
 
 - 在 chatgpt.com / claude.ai 页内一键导出对话为 Obsidian 等笔记软件友好的 Markdown
-  （ChatGPT 支持批量与增量；Claude 首版只做当前对话，理由见 P5）
+  （两站均支持当前、选择、批量与增量导出；Claude 使用更保守的独立风控）
 - 高保真：公式、引用链接、代码、图片/附件、思维链、Canvas 不丢不乱
 - 增量同步：重跑只导出有变化的对话
 - 全程本地处理，不经任何第三方服务
@@ -77,6 +77,7 @@ inkstone/
       ir.ts             # 中间表示：IRConversation / IRTurn / IRBlock
       render.ts         # IR → Markdown（轮次标题、callout、围栏、frontmatter）
       fetcher.ts        # 限速 / 退避 / 并发池 / 取消 / 限流观测（每站点一个实例）
+      batch-safety.ts   # 站点级并发/重试策略 + 429/请求预算/失败率熔断
     sites/
       types.ts          # SiteAdapter 契约（取数 + 转换 + 界面锚点 + 批量能力）
       index.ts          # 按 location.host 分派
@@ -84,8 +85,8 @@ inkstone/
         index.ts        # adapter 实装
         convert.ts      # backend-api JSON → IR（content_type 分发、canmore 语义）
       claude/
-        index.ts        # adapter 实装（supportsBatch: false）
-        api.ts          # 内部 API 客户端 + 保守限流参数 + 分页器（未接界面）
+        index.ts        # adapter 实装 + Claude 专属批量风控策略
+        api.ts          # 内部 API 客户端 + 保守限流参数 + 有界分页器
         types.ts        # 从宽的字段类型，[待测] 处已标注
         convert.ts      # 内部 API JSON → IR（块级分发、主线回溯、附件两处来源）
         artifacts.ts    # artifact create/update/rewrite 折叠成终稿
@@ -103,7 +104,7 @@ inkstone/
       fsaccess.ts       # File System Access 直写 vault（句柄存 IndexedDB）
   test/
     fixtures/*.json     # 对话 JSON（ChatGPT 真实脱敏 / Claude 合成）
-    *.test.ts           # bun test（132 个）
+    *.test.ts           # bun test 回归套件
 ```
 
 ## 阶段
@@ -130,13 +131,13 @@ inkstone/
   - **Claude 侧的脏活更少**：Canvas 的正则 patch 重放（150 行）与私有区 Unicode 引用
     还原（178 行）在 Claude 都不需要——artifact 的 update 是字面量 `old_str`→`new_str`，
     引用是结构化数组。artifact 折叠约 40 行。
-  - **⚠️ 首版刻意只做「导出当前对话」**：批量的地基（分页器、水位线、并发池、
-    保护性中止）全部就位且已单测，但 `supportsBatch: false` 关着。理由是限流画像
-    未知——ChatGPT 侧的参数是 344 + 432 对话实测调出来的，Claude 侧一条实测数据
-    都没有。调研过的三个开源 claude.ai 导出器**没有一个实现了 429 退避**
-    （最激进的是 3 并发 + 固定 200ms 间隔且不看 429），所以没有可借鉴的安全参数。
+  - **批量分阶段开放**：首版因限流画像未知而只开放当前对话；2026-08-29 恢复选择、
+    全部与增量导出，但不照搬 ChatGPT 参数。Claude 固定单并发、不做失败项整批二次重试；
+    一次带 `Retry-After` 的 429、累计 3 次 429、单批 1000 次 HTTP 尝试，或至少 5 条失败
+    且失败率超过 25%，都会保护性中止。成功条目才推进水位线，未尝试部分由下次增量补齐。
+    列表分页另设 250 请求 / 10000 条硬上限，并检测重复页与缺失 uuid，防接口漂移后空转。
   - **Claude 限流起步参数**（保守，待实测调整）：间距 1500ms（ChatGPT 侧的两倍慢）、
-    上限 8000ms、每 40 请求歇 30s、最多重试 6 次。每个站点持有独立的 fetcher 实例，
+    上限 8000ms、每 40 请求歇 30s、首次失败后最多重试 1 次。每个站点持有独立的 fetcher 实例，
     一边的限流不拖累另一边。吃到 429 时导出完成文案会报出次数、被推大的间距与
     服务端要求的最长等待——未知站点的节奏只能靠实测看清，先让它可见再谈调参。
   - **待实测**：`docs/claude-probe.js` 可直接粘进 claude.ai 控制台，打印字段骨架

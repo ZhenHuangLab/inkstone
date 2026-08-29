@@ -44,6 +44,8 @@ export interface PickerItem {
   id: string
   title: string
   updated: string
+  /** 所属 project 名；缺省 = 主列表会话。 */
+  project?: string
 }
 
 export interface PanelHandle {
@@ -54,13 +56,15 @@ export interface PanelHandle {
   appendPicker(items: PickerItem[], done: boolean): void
   /** 清空多选列表（重新拉取前调用） */
   clearPicker(): void
+  /** 填充来源下拉中的 project 选项，并保留仍然存在的当前选项。 */
+  setPickerProjects(projects: { id: string; name: string }[]): void
   /** 某一页拉取失败：解除加载中状态，允许再次触发 */
   pickerLoadFailed(): void
 }
 
 export interface PanelCallbacks {
   /** 当前站点：决定标题文案与批量入口是否出现 */
-  site: { id: string; label: string; supportsBatch: boolean }
+  site: { id: string; label: string; supportsBatch: boolean; supportsSources: boolean }
   /** 站点专属的锚点与配色探测 */
   siteUi: SiteUi
   /** ids 仅在 scope === 'selection' 时有意义 */
@@ -71,8 +75,8 @@ export interface PanelCallbacks {
     panel: PanelHandle,
     opts: ExportOptions,
   ): void
-  /** 首次切到「选择」或点重新拉取：回调负责重置分页并拉第一页 */
-  onPickList(panel: PanelHandle): void
+  /** 首次进入、重新拉取或切换来源；source 为 all/main/project id。 */
+  onPickList(panel: PanelHandle, source: string): void
   /** 列表滚到底部：回调负责拉下一页并调用 panel.appendPicker */
   onPickMore(panel: PanelHandle): void
   onCancel(): void
@@ -238,9 +242,17 @@ const STYLE = `
 
   .picker { display: none; margin-top: 8px; }
   .picker.open { display: block; }
+  .picker .srcrow { display: flex; gap: 4px; margin-bottom: 6px; }
+  .picker select.src {
+    flex-shrink: 0; max-width: 108px; padding: 6px 7px; border: 1px solid var(--border);
+    border-radius: 8px; font-size: 12px; background: transparent; color: var(--fg);
+    outline: none; cursor: pointer; transition: border-color .15s var(--ease);
+  }
+  .picker select.src:focus { border-color: var(--accent); }
+  .picker select.src option { background: Canvas; color: CanvasText; }
   .picker input[type="search"] {
-    width: 100%; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
-    font-size: 12px; margin-bottom: 6px; background: transparent; color: var(--fg); outline: none;
+    flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12px; background: transparent; color: var(--fg); outline: none;
     transition: border-color .15s var(--ease);
   }
   .picker input[type="search"]::placeholder { color: var(--muted); }
@@ -258,6 +270,10 @@ const STYLE = `
   .picker .row:hover { background: var(--hover); }
   .picker .row.hidden { display: none; }
   .picker .row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker .row .p {
+    flex-shrink: 0; max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--muted); font-size: 10px; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--border);
+  }
   .picker .row .d { color: var(--muted); font-size: 10px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
   .picker .sentinel { padding: 7px 0; text-align: center; color: var(--muted); font-size: 11px; }
   .picker .sentinel:empty { padding: 0; }
@@ -495,6 +511,7 @@ export function mountPanel(cb: PanelCallbacks): void {
   // 批量能力未开放的站点直接不出现「全部 / 选择…」——按钮存在但点不动，
   // 比它根本不出现更让人困惑
   const batchAttr = cb.site.supportsBatch ? '' : ' hidden'
+  const sourceAttr = cb.site.supportsSources ? '' : ' hidden'
   panel.innerHTML = `
     <div class="head">导出 ${cb.site.label} 对话</div>
 
@@ -505,7 +522,13 @@ export function mountPanel(cb: PanelCallbacks): void {
       <button data-v="selection" aria-pressed="false"${batchAttr}>选择…</button>
     </div>
     <div class="picker">
-      <input type="search" placeholder="搜索标题过滤…" aria-label="搜索标题过滤">
+      <div class="srcrow">
+        <select class="src" aria-label="列表来源"${sourceAttr}>
+          <option value="all">全部</option>
+          <option value="main">主列表</option>
+        </select>
+        <input type="search" placeholder="搜索标题过滤…" aria-label="搜索标题过滤">
+      </div>
       <div class="tools">
         <button data-sel="all">全选</button>
         <button data-sel="invert">反选</button>
@@ -709,6 +732,7 @@ export function mountPanel(cb: PanelCallbacks): void {
   const pickerList = pickerEl.querySelector<HTMLDivElement>('.list')!
   const sentinel = pickerList.querySelector<HTMLDivElement>('.sentinel')!
   const pickerSearch = pickerEl.querySelector<HTMLInputElement>('input[type="search"]')!
+  const pickerSrc = pickerEl.querySelector<HTMLSelectElement>('select.src')!
   const pickerEmpty = pickerEl.querySelector<HTMLDivElement>('.empty')!
   const pickerCount = pickerEl.querySelector<HTMLSpanElement>('.count')!
   const segButtons = [...panel.querySelectorAll<HTMLButtonElement>('.seg button')]
@@ -880,7 +904,7 @@ export function mountPanel(cb: PanelCallbacks): void {
       for (const item of items) {
         const row = document.createElement('label')
         row.className = 'row'
-        row.title = item.title
+        row.title = item.project ? `${item.title}（${item.project}）` : item.title
         const box = document.createElement('input')
         box.type = 'checkbox'
         box.dataset['id'] = item.id
@@ -890,7 +914,14 @@ export function mountPanel(cb: PanelCallbacks): void {
         const d = document.createElement('span')
         d.className = 'd'
         d.textContent = item.updated
-        row.append(box, t, d)
+        if (item.project) {
+          const p = document.createElement('span')
+          p.className = 'p'
+          p.textContent = item.project
+          row.append(box, t, p, d)
+        } else {
+          row.append(box, t, d)
+        }
         // 始终插在哨兵之前，哨兵保持在列表末尾
         sentinel.before(row)
       }
@@ -903,6 +934,17 @@ export function mountPanel(cb: PanelCallbacks): void {
       // 这一页没填满滚动容器（列表还没出现滚动条）时哨兵不会再次进入视口，
       // 需要主动续拉，否则懒加载会停在第一页。
       if (!done) queueMicrotask(maybeAutoFill)
+    },
+    setPickerProjects: (projects) => {
+      const keep = pickerSrc.value
+      while (pickerSrc.options.length > 2) pickerSrc.remove(2)
+      for (const project of projects) {
+        const option = document.createElement('option')
+        option.value = project.id
+        option.textContent = project.name
+        pickerSrc.add(option)
+      }
+      pickerSrc.value = [...pickerSrc.options].some((option) => option.value === keep) ? keep : 'all'
     },
     clearPicker: () => {
       for (const r of rows()) r.remove()
@@ -948,14 +990,16 @@ export function mountPanel(cb: PanelCallbacks): void {
 
   sentinel.addEventListener('click', requestMore)
 
-  /** 重置并拉第一页（首次进入「选择」/ 点重新拉取按钮） */
+  /** 重置并拉第一页（首次进入「选择」/ 点重新拉取 / 切换来源） */
   function loadList(): void {
     handle.clearPicker()
     pickerSearch.value = ''
     listLoading = true
     sentinel.textContent = '加载中…'
-    cb.onPickList(handle)
+    cb.onPickList(handle, pickerSrc.value)
   }
+
+  pickerSrc.addEventListener('change', loadList)
 
   for (const btn of segButtons) {
     btn.addEventListener('click', () => {

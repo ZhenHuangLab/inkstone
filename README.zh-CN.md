@@ -36,17 +36,17 @@ Inkstone 直接运行在页内，通过应用自己使用的 backend API 抓取�
 | | ChatGPT | Claude |
 | --- | --- | --- |
 | 导出当前对话 | ✅ | ✅ |
-| 批量 / 全部导出 | ✅ | ⏳ 暂不开放 |
-| 增量同步 | ✅ | ⏳ 暂不开放 |
+| 批量 / 全部导出 | ✅ | ✅ 保守风控 |
+| 增量同步 | ✅ | ✅ |
 | 富文档还原 | Canvas patch 重放 | Artifact 折叠还原终稿 |
 | 思维链 / 工具痕迹 | ✅ 可开关 | ✅ 可开关 |
 | 附件 | 图片与文件下载 | 图片下载、文档链接、文本抽取件内联 |
 
-**Claude 端为什么先不做批量？** 不是没写，是没开。批量所需的分页器、水位线、并发池、
-保护性中止都已就位并通过单测，但 Claude 侧的限流画像还没有任何实测数据——
-ChatGPT 端那套参数是 344 + 432 条对话跑出来才敢用的。在拿到同等的实测证据之前，
-批量抓取整个历史的风险由用户账号承担，这个代价不该由一个默认开启的开关来决定。
-细节与实测计划见 [`docs/claude-adapter-feasibility.md`](./docs/claude-adapter-feasibility.md)。
+**Claude 批量导出采用更保守的独立风控。** Claude 的限流画像仍没有大样本实测，
+因此不照搬 ChatGPT 参数：固定单并发、请求间隔从 1500ms 起、每 40 次请求休息 30 秒，
+不对整批失败项做第二轮重试。一次带 `Retry-After` 的全局限流信号、累计 3 次 429、
+1000 次 HTTP 尝试或异常失败率过高都会保护性中止；已经成功的对话照常落盘，未完成项
+不推进水位线，下次增量导出会继续补齐。
 
 ## 截图
 
@@ -116,8 +116,9 @@ bun run build        # 产物 dist/inkstone.user.js，拖进 Tampermonkey 即可
 打开 chatgpt.com 或 claude.ai（已登录）→ 点**顶栏 Share 左侧的 ⤓ 按钮** → 选 **Markdown zip** 或**原始 JSON zip** → 解压到 Obsidian vault。
 
 - 按钮位置可换（面板 → 高级设置）：顶栏 Share 旁，或输入框旁的玻璃圆钮
-- UI 主题色自动跟随 ChatGPT 的外观设置（明暗 + accent color）
+- UI 明暗自动跟随所在站点；ChatGPT 跟随用户选择的重点色，Claude 使用品牌橙色
 - 可随时取消；单条对话失败不中断整体导出，失败汇总进 `_failures.json`
+- Claude 批量默认单并发慢速执行；触发保护性中止后不要立刻重跑，先按界面提示等待
 
 ## 离线 CLI
 
@@ -151,7 +152,7 @@ claude.ai 的 CSP 可能拦掉 dev server 的脚本，Claude 端的改动请用 
 
 ## 路线图
 
-Claude 端的批量导出（等限流画像实测清楚再开）、MV3 浏览器扩展（脱离 Tampermonkey、上架商店）、Gemini 适配。已完成：多站点适配器架构、Claude 单对话导出、增量同步、直写 vault、设置面板、Canvas patch 重放、Artifact 折叠还原、离线 CLI。详见 [PLAN.md](./PLAN.md)。
+MV3 浏览器扩展（脱离 Tampermonkey、上架商店）、Gemini 适配。已完成：多站点适配器架构、Claude 批量与增量导出、直写 vault、设置面板、Canvas patch 重放、Artifact 折叠还原、离线 CLI。详见 [PLAN.md](./PLAN.md)。
 
 ## 许可证
 

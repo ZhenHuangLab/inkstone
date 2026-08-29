@@ -7,7 +7,7 @@
 import { conversationToIR } from '../sites/chatgpt/convert'
 import {
   renderConversation,
-  type ConvertOptions,
+  type ConvertOptions as CoreConvertOptions,
   type ConvertResult,
   type LinkStyle,
 } from '../core/render'
@@ -19,16 +19,20 @@ export {
   filenameFor,
   sanitizeName,
   sanitizeSubdir,
-  type ConvertOptions,
   type ConvertResult,
   type LinkStyle,
 } from '../core/render'
 export type { AssetRef } from '../core/ir'
+
+/** ChatGPT 兼容入口额外接受 project 名；通用渲染器仍保持站点无关。 */
+export interface ConvertOptions extends CoreConvertOptions {
+  projectName?: string
+}
 
 export function conversationToMarkdown(
   conv: ConversationDetail,
   fallbackId = '',
   copts: ConvertOptions = {},
 ): ConvertResult {
-  return renderConversation(conversationToIR(conv, fallbackId), copts)
+  return renderConversation(conversationToIR(conv, fallbackId, copts.projectName), copts)
 }

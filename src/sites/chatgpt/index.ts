@@ -4,6 +4,8 @@ import {
   fetchConversation,
   getAccessToken,
   listAllConversations,
+  listProjects,
+  projectNameOf,
   resolveFileDownload,
   throttleStats,
 } from '../../api'
@@ -17,7 +19,12 @@ const toItem = (i: ConversationListItem): SiteConversationItem => ({
   id: i.id,
   title: i.title ?? '',
   update_time: i.update_time ?? null,
+  project: projectNameOf(i.gizmo_id),
 })
+
+interface ChatGPTIRContext {
+  projectName?: string
+}
 
 export const chatgptAdapter: SiteAdapter = {
   id: 'chatgpt',
@@ -35,7 +42,26 @@ export const chatgptAdapter: SiteAdapter = {
 
   fetchRaw: (session, id, cancel) => fetchConversation(session, id, cancel),
 
-  toIR: (raw, fallbackId) => conversationToIR(raw as ConversationDetail, fallbackId),
+  fetchIRContext: async (session, _id, raw, cancel): Promise<ChatGPTIRContext> => {
+    const gizmoId = (raw as ConversationDetail).gizmo_id
+    if (!gizmoId) return {}
+    const known = projectNameOf(gizmoId)
+    if (known) return { projectName: known }
+    try {
+      await listProjects(session, cancel)
+    } catch (error) {
+      if (cancel?.cancelled) throw error
+      return {}
+    }
+    return { projectName: projectNameOf(gizmoId) }
+  },
+
+  toIR: (raw, fallbackId, context) =>
+    conversationToIR(
+      raw as ConversationDetail,
+      fallbackId,
+      (context as ChatGPTIRContext | undefined)?.projectName,
+    ),
 
   async fetchAsset(
     session: string,
@@ -52,11 +78,20 @@ export const chatgptAdapter: SiteAdapter = {
   throttleStats,
 
   batch: {
+    // 保持 344 + 432 对话实测得到的既有节奏与失败重试策略。
+    policy: {
+      concurrency: 2,
+      retryFailed: true,
+      retryDelayMs: 20_000,
+      failureAbortMin: 25,
+      failureAbortRatio: 0.5,
+    },
     async listAll(session, onProgress, cancel) {
       return (await listAllConversations(session, onProgress, cancel)).map(toItem)
     },
-    createPager(session, cancel) {
-      const pager = createConversationPager(session, cancel)
+    listSources: (session, cancel) => listProjects(session, cancel),
+    createPager(session, cancel, source) {
+      const pager = createConversationPager(session, cancel, source)
       return {
         async next() {
           const { items, done } = await pager.next()

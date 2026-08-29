@@ -14,7 +14,15 @@ import {
   type Fetcher,
   type ThrottleConfig,
 } from './core/fetcher'
-import type { ConversationDetail, ConversationListItem, ConversationListPage, SessionResponse } from './types'
+import type {
+  ConversationDetail,
+  ConversationListItem,
+  ConversationListPage,
+  GizmoConversationsPage,
+  GizmoSidebarPage,
+  ProjectInfo,
+  SessionResponse,
+} from './types'
 
 export {
   ApiError,
@@ -63,94 +71,205 @@ export async function listConversationsPage(
   return (await res.json()) as ConversationListPage
 }
 
+// ===== Projects（gizmo）=====
+// 主列表接口只返回侧栏「Chats」那份平铺列表，project 里的会话必须按 project
+// 逐个走 gizmos 接口拿。两个坐标系完全不同：主列表是 offset，gizmos 是字符串游标。
+const PROJECT_PAGE_LIMIT = 50
+
+const projectNames = new Map<string, string>()
+
+/** 已知的 project 名（需先 listProjects 拉过）；不在 project 侧栏里的 gizmo 返回 undefined。 */
+export const projectNameOf = (gizmoId: string | null | undefined): string | undefined =>
+  gizmoId ? projectNames.get(gizmoId) : undefined
+
+// 面板来源下拉与归并分页器会几乎同时取列表；只合并正在进行的请求，避免长期缓存陈数据。
+let projectsInFlight: Promise<ProjectInfo[]> | null = null
+
+export function listProjects(token: string, cancel?: CancelToken): Promise<ProjectInfo[]> {
+  projectsInFlight ??= fetchProjects(token, cancel).finally(() => {
+    projectsInFlight = null
+  })
+  return projectsInFlight
+}
+
+async function fetchProjects(token: string, cancel?: CancelToken): Promise<ProjectInfo[]> {
+  const out: ProjectInfo[] = []
+  let cursor: number | null = null
+  for (;;) {
+    ensureAlive(cancel)
+    const url =
+      `${location.origin}/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0` +
+      (cursor == null ? '' : `&cursor=${encodeURIComponent(String(cursor))}`)
+    const res = await fetcher.request(url, { headers: auth(token) }, cancel)
+    const page = (await res.json()) as GizmoSidebarPage
+    for (const entry of page.items ?? []) {
+      const g = entry.gizmo?.gizmo
+      if (!g?.id) continue
+      const name = (g.display?.name ?? '').trim() || '未命名项目'
+      projectNames.set(g.id, name)
+      out.push({ id: g.id, name })
+    }
+    cursor = page.cursor ?? null
+    if (cursor == null) return out
+  }
+}
+
+async function listProjectConversationsPage(
+  token: string,
+  gizmoId: string,
+  cursor: string,
+  cancel?: CancelToken,
+): Promise<GizmoConversationsPage> {
+  const url =
+    `${location.origin}/backend-api/gizmos/${encodeURIComponent(gizmoId)}/conversations` +
+    `?cursor=${encodeURIComponent(cursor)}&limit=${PROJECT_PAGE_LIMIT}`
+  const res = await fetcher.request(url, { headers: auth(token) }, cancel)
+  return (await res.json()) as GizmoConversationsPage
+}
+
+export interface ConversationPager {
+  /** 拉下一页；done=true 表示所有来源都到底（此后再调直接返回空页 + done） */
+  next(): Promise<{ items: ConversationListItem[]; done: boolean }>
+}
+
+const SOURCE_ALL = 'all'
+const SOURCE_MAIN = 'main'
+
+function timeOf(i: ConversationListItem): number {
+  const t = i.update_time ?? i.create_time
+  if (typeof t === 'number') return t
+  if (typeof t === 'string') {
+    const ms = Date.parse(t)
+    return Number.isNaN(ms) ? -Infinity : ms / 1000
+  }
+  return -Infinity
+}
+
+interface SourceStream {
+  done: boolean
+  peek(): ConversationListItem | undefined
+  take(): ConversationListItem
+  fill(): Promise<void>
+}
+
+function makeStream(nextPage: () => Promise<ConversationListItem[] | null>): SourceStream {
+  const buf: ConversationListItem[] = []
+  const stream: SourceStream = {
+    done: false,
+    peek: () => buf[0],
+    take: () => buf.shift()!,
+    async fill() {
+      const page = await nextPage()
+      if (page == null) stream.done = true
+      else buf.push(...page)
+    },
+  }
+  return stream
+}
+
+/** 主列表与各 project 的多源惰性分页器，按更新时间倒序归并并按 id 去重。 */
+export function createConversationPager(
+  token: string,
+  cancel?: CancelToken,
+  source: string = SOURCE_ALL,
+): ConversationPager {
+  const onlyProject = source === SOURCE_ALL || source === SOURCE_MAIN ? null : source
+  const seen = new Set<string>()
+  let offset = 0
+  let limit = 100
+  let emptyRetries = 0
+  let streams: SourceStream[] | null = null
+  let done = false
+
+  async function mainPage(): Promise<ConversationListItem[] | null> {
+    for (;;) {
+      ensureAlive(cancel)
+      let page: ConversationListPage
+      try {
+        page = await listConversationsPage(token, offset, limit, cancel)
+      } catch (e) {
+        if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 429 && limit > 50) {
+          limit = 50
+          continue
+        }
+        throw e
+      }
+      const items = page.items ?? []
+      if (items.length === 0) {
+        if (offset === 0 || emptyRetries >= 2) return null
+        emptyRetries++
+        await sleep(4000 * emptyRetries)
+        continue
+      }
+      emptyRetries = 0
+      offset += items.length
+      return items
+    }
+  }
+
+  function projectPages(gizmoId: string): () => Promise<ConversationListItem[] | null> {
+    let cursor: string | null = '0'
+    return async () => {
+      if (cursor == null) return null
+      ensureAlive(cancel)
+      const page = await listProjectConversationsPage(token, gizmoId, cursor, cancel)
+      cursor = page.cursor ?? null
+      return (page.items ?? []).map((i) => ({ ...i, gizmo_id: i.gizmo_id ?? gizmoId }))
+    }
+  }
+
+  async function buildStreams(): Promise<SourceStream[]> {
+    if (onlyProject != null) return [makeStream(projectPages(onlyProject))]
+    if (source === SOURCE_MAIN) return [makeStream(mainPage)]
+    const projects = await listProjects(token, cancel)
+    return [makeStream(mainPage), ...projects.map((p) => makeStream(projectPages(p.id)))]
+  }
+
+  return {
+    async next() {
+      if (done) return { items: [], done: true }
+      streams ??= await buildStreams()
+      for (;;) {
+        for (const s of streams) {
+          while (!s.done && s.peek() === undefined) await s.fill()
+        }
+        const out: ConversationListItem[] = []
+        for (;;) {
+          let best: SourceStream | undefined
+          for (const s of streams) {
+            const head = s.peek()
+            if (head === undefined) continue
+            if (best === undefined || timeOf(head) > timeOf(best.peek()!)) best = s
+          }
+          if (best === undefined) {
+            done = true
+            break
+          }
+          const item = best.take()
+          if (!seen.has(item.id)) {
+            seen.add(item.id)
+            out.push(item)
+          }
+          if (best.peek() === undefined && !best.done) break
+        }
+        if (out.length > 0 || done) return { items: out, done }
+      }
+    },
+  }
+}
+
 export async function listAllConversations(
   token: string,
   onProgress?: (fetched: number) => void,
   cancel?: CancelToken,
 ): Promise<ConversationListItem[]> {
+  const pager = createConversationPager(token, cancel)
   const all: ConversationListItem[] = []
-  let offset = 0
-  let limit = 100
-  let emptyRetries = 0
-  // 注意：接口的 total 字段不可靠（实测翻页途中返回 offset+len+1），
-  // 终止条件只认「空页」或「不足一页」。
   for (;;) {
-    ensureAlive(cancel)
-    let page: ConversationListPage
-    try {
-      page = await listConversationsPage(token, offset, limit, cancel)
-    } catch (e) {
-      // limit 上限历史上收紧过；非限流的 4xx 先降到 50 重试一次
-      if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 429 && limit > 50) {
-        limit = 50
-        continue
-      }
-      throw e
-    }
-    const items = page.items ?? []
+    const { items, done } = await pager.next()
     all.push(...items)
-    onProgress?.(all.length)
-    // 服务端可能按自己的上限截页（返回数 < 请求 limit 不代表到底），只认空页；
-    // 而且列表索引实测会瞬时降级、提前返回空页/短列表（对话本身还在），
-    // 所以空页也不轻信，隔几秒重试确认，连续空 3 次才算到底。
-    if (items.length === 0) {
-      if (all.length === 0 || emptyRetries >= 2) break
-      emptyRetries++
-      await sleep(4000 * emptyRetries)
-      continue
-    }
-    emptyRetries = 0
-    offset += items.length
-  }
-  return all
-}
-
-export interface ConversationPager {
-  /** 拉下一页；done=true 表示已确认到底（此后再调直接返回空页 + done） */
-  next(): Promise<{ items: ConversationListItem[]; done: boolean }>
-}
-
-/**
- * 惰性分页器：把 listAllConversations 的翻页与防御逻辑逐页化，供「选择对话」
- * 的懒加载使用（切到「选择」不再一次性翻完全部页）。终止条件与全量版一致：
- * 只认空页，且空页要隔几秒重试确认，连续空 3 次才算到底。
- */
-export function createConversationPager(token: string, cancel?: CancelToken): ConversationPager {
-  let offset = 0
-  let limit = 100
-  let emptyRetries = 0
-  let done = false
-  return {
-    async next() {
-      if (done) return { items: [], done: true }
-      for (;;) {
-        ensureAlive(cancel)
-        let page: ConversationListPage
-        try {
-          page = await listConversationsPage(token, offset, limit, cancel)
-        } catch (e) {
-          if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 429 && limit > 50) {
-            limit = 50
-            continue
-          }
-          throw e
-        }
-        const items = page.items ?? []
-        if (items.length === 0) {
-          // 首页即空 = 账号真没对话；否则可能是列表索引瞬时降级，隔几秒重试确认
-          if (offset === 0 || emptyRetries >= 2) {
-            done = true
-            return { items: [], done: true }
-          }
-          emptyRetries++
-          await sleep(4000 * emptyRetries)
-          continue
-        }
-        emptyRetries = 0
-        offset += items.length
-        return { items, done: false }
-      }
-    },
+    if (items.length > 0) onProgress?.(all.length)
+    if (done) return all
   }
 }
 
