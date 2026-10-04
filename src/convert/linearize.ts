@@ -1,7 +1,11 @@
 import type { ConversationDetail, MappingNode, Message } from '../types'
 
 /** 沿 current_node 回溯到根，得到网页上实际可见的主线消息序列（编辑/重新生成的旧分支不含在内）。 */
-export function linearize(conv: ConversationDetail): Message[] {
+export interface LinearizeOptions {
+  toolTraces?: boolean
+}
+
+export function linearize(conv: ConversationDetail, opts: LinearizeOptions = {}): Message[] {
   const mapping = conv.mapping ?? {}
   let cursor: string | null = conv.current_node ?? findLatestLeaf(mapping)
   const chain: Message[] = []
@@ -14,7 +18,7 @@ export function linearize(conv: ConversationDetail): Message[] {
     cursor = node.parent ?? null
   }
   chain.reverse()
-  return chain.filter(isVisible)
+  return chain.filter((msg) => isVisible(msg, opts))
 }
 
 // current_node 缺失时兜底：取 create_time 最新的叶子
@@ -37,8 +41,16 @@ function findLatestLeaf(mapping: Record<string, MappingNode>): string | null {
   return best
 }
 
-export function isVisible(msg: Message): boolean {
-  if (msg.metadata?.is_visually_hidden_from_conversation) return false
+function isToolTrace(msg: Message): boolean {
+  const role = msg.author?.role
+  const recipient = msg.recipient ?? 'all'
+  const ct = msg.content?.content_type
+  return role === 'tool' || (role === 'assistant' && (recipient !== 'all' || ct === 'code' || ct === 'execution_output'))
+}
+
+export function isVisible(msg: Message, opts: LinearizeOptions = {}): boolean {
+  const toolTrace = opts.toolTraces === true && isToolTrace(msg)
+  if (msg.metadata?.is_visually_hidden_from_conversation && !toolTrace) return false
   if (msg.author?.role === 'system') return false
   const c = msg.content
   const ct = c?.content_type
@@ -46,6 +58,7 @@ export function isVisible(msg: Message): boolean {
   if (ct === 'user_editable_context' || ct === 'model_editable_context') return false
   // “Thought for Xs” 一句话摘要，无内容价值
   if (ct === 'reasoning_recap') return false
+  if (toolTrace) return true
   if (ct === 'text' || ct === 'multimodal_text') {
     const parts = c.parts ?? []
     if (parts.length === 0) return false

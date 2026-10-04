@@ -96,6 +96,44 @@ describe('conversationToMarkdown', () => {
     expect(on).toContain('search_query')
   })
 
+  test('tool 角色的多模态生成图片始终走附件路径', () => {
+    const conv = {
+      title: '生成图片测试',
+      conversation_id: 'facefeed-0000-0000-0000-000000000000',
+      current_node: 'img1',
+      mapping: {
+        img1: {
+          id: 'img1',
+          parent: null,
+          children: [],
+          message: {
+            id: 'img1',
+            author: { role: 'tool', name: 'api_tool.call_tool' },
+            content: {
+              content_type: 'multimodal_text',
+              parts: [
+                'browser action completed: screenshot',
+                {
+                  content_type: 'image_asset_pointer',
+                  asset_pointer: 'sediment://file_generated123',
+                  size_bytes: 42,
+                },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as ConversationDetail
+
+    for (const toolTraces of [false, true]) {
+      const result = conversationToMarkdown(conv, '', { toolTraces })
+      expect(result.markdown).toContain('%%INKSTONE-ASSET-file_generated123%%')
+      expect(result.assets.some((a) => a.fileId === 'file_generated123' && a.kind === 'image')).toBe(true)
+      expect(result.markdown).not.toContain('工具返回')
+      expect(result.markdown).not.toContain('image_asset_pointer')
+    }
+  })
+
   test('思考过程默认不写入', () => {
     expect(markdown).not.toContain('思考过程')
     expect(markdown).not.toContain('分析问题')

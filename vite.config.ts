@@ -18,9 +18,9 @@ export default defineConfig({
         match: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
         icon: 'https://chatgpt.com/favicon.ico',
         license: 'GPL-3.0-only',
-        'run-at': 'document-idle',
+        'run-at': 'document-start',
         noframes: true,
-        grant: ['GM_getValue', 'GM_setValue'],
+        grant: ['GM_getValue', 'GM_setValue', 'unsafeWindow'],
         // 指向 GitHub Releases 的固定「最新版」地址：发新 release 后 Tampermonkey 自动更新
         downloadURL: 'https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js',
         updateURL: 'https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js',

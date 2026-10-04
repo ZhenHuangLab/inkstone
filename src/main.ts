@@ -41,6 +41,7 @@ import {
 } from './state'
 import { mountPanel, type ExportFormat, type ExportOptions, type PanelHandle, type PickerItem } from './ui'
 import type { ConversationListItem } from './types'
+import { hydrateToolMessages } from './tool-cache'
 
 // 图片始终下载，上限只防异常；文件类附件的上限由面板设置（opts.maxFileMB）
 const MAX_IMAGE_BYTES = 30 * 1024 * 1024
@@ -338,6 +339,7 @@ function createProcessor(
       await sink.put(path, strToU8(JSON.stringify(conv, null, 2)))
       return { path }
     }
+    hydrateToolMessages(conv)
     const { markdown, title, assets } = conversationToMarkdown(conv, item.id, {
       thoughts: opts.thoughts,
       toolTraces: opts.toolTraces,

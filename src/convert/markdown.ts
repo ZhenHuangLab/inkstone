@@ -80,7 +80,7 @@ export function conversationToMarkdown(
 ): ConvertResult {
   const convId = String(conv.conversation_id ?? conv.id ?? fallbackId)
   const title = (conv.title ?? '').trim() || 'Untitled'
-  const messages = linearize(conv)
+  const messages = linearize(conv, { toolTraces: copts.toolTraces === true })
   // 消息级 model_slug 才是实际生成回复的模型（default_model_slug 只是对话的默认档位，仅作回退）；
   // 中途切换过模型时以最后一条为准——须在去重前取（Set 保留首现顺序，A→B→A 会错取 B），
   // 去重序列只用于 models 列表
@@ -184,6 +184,14 @@ function renderTurn(turn: Turn, ctx: RenderCtx): string | null {
   return [heading, ...rendered].join('\n\n')
 }
 
+function renderToolPayload(c: MessageContent): string {
+  if (c?.content_type === 'text' || c?.content_type === 'multimodal_text') {
+    return (c.parts ?? []).map((p) => (typeof p === 'string' ? p : JSON.stringify(p, null, 2))).join('\n')
+  }
+  if (typeof c?.text === 'string') return c.text
+  return JSON.stringify(c ?? null, null, 2)
+}
+
 function renderMessage(msg: Message, ctx: RenderCtx): string | null {
   const c = msg.content
   const recipient = msg.recipient ?? 'all'
@@ -191,8 +199,29 @@ function renderMessage(msg: Message, ctx: RenderCtx): string | null {
   const blocks: string[] = []
   const inlineImageIds = new Set<string>()
 
-  // canmore 工具的确认回执（role=tool）：内容已由重放侧呈现，不重复
-  if (msg.author.role === 'tool' && (msg.author.name ?? '').startsWith('canmore.')) return null
+  const toolHasInlineImage =
+    msg.author?.role === 'tool' &&
+    c.content_type === 'multimodal_text' &&
+    (c.parts ?? []).some(
+      (p) =>
+        typeof p !== 'string' &&
+        p.content_type === 'image_asset_pointer' &&
+        typeof p.asset_pointer === 'string',
+    )
+
+  if (msg.author?.role === 'tool' && c.content_type !== 'execution_output' && !toolHasInlineImage) {
+    if (!ctx.toolTraces) return null
+    const name =
+      (typeof msg.metadata?.inkstone_tool_name === 'string' && msg.metadata.inkstone_tool_name) ||
+      msg.author?.name ||
+      (recipient !== 'all' ? recipient : 'tool')
+    const raw = renderToolPayload(c)
+    const lang = c?.content_type === 'code' ? codeLanguage(c, recipient) : ''
+    blocks.push(callout('note', `工具返回 ← \`${name}\``, fence(stripResidualMarkers(raw), lang), true))
+    const attachments = (msg.metadata?.attachments ?? []).filter((a) => a?.id)
+    if (attachments.length > 0) blocks.push(attachments.map((a) => `- ${registerFileAsset(a, ctx)}`).join('\n'))
+    return blocks.join('\n\n')
+  }
 
   switch (c.content_type) {
     case 'text': {
