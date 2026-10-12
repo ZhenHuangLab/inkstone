@@ -29,9 +29,10 @@ const fixtures = [
     composer: '<div class="composer"><div data-composer-markdown contenteditable="true" role="textbox"></div></div>', headerLeft: null },
 ]
 
-async function mount(site, html, mode = 'header', viewport = { width: 1280, height: 900 }) {
+async function mount(site, html, mode = 'header', viewport = { width: 1280, height: 900 }, pauseTimers = false) {
   const context = await browser.newContext({ viewport, reducedMotion: 'reduce' })
   const page = await context.newPage()
+  if (pauseTimers) await page.clock.install()
   const errors = []
   const requests = []
   page.on('pageerror', (error) => errors.push(error.message))
@@ -41,6 +42,7 @@ async function mount(site, html, mode = 'header', viewport = { width: 1280, heig
   await page.evaluate((fabPos) => localStorage.setItem('inkstone:settings', JSON.stringify({ fabPos })), mode)
   await page.addScriptTag({ content: source })
   await page.locator('[data-inkstone] .fab.in').waitFor()
+  if (pauseTimers) await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
   return { context, page, errors, requests }
 }
 
@@ -59,6 +61,42 @@ async function hit(page, position, expected) {
 }
 
 try {
+  for (const layout of ['dense', 'actions']) {
+    const html = layout === 'dense'
+      ? '<header id="page-header"><button style="position:absolute;left:8px;top:10px;width:36px;height:36px">Menu</button><button style="position:absolute;left:52px;top:10px;width:120px;height:36px">Model</button><button data-testid="share-chat-button" style="position:absolute;right:90px;top:10px;width:60px;height:36px">Share</button><button data-testid="profile-button" style="position:absolute;right:16px;top:10px;width:44px;height:36px">Profile</button></header>'
+      : '<header id="page-header"><div id="conversation-header-actions" class="actions" style="width:min(330px,calc(100% - 24px));display:flex"><button>Files</button><button>Share</button><button>Profile</button></div></header>'
+    // 暂停维护轮询；真实 resize 事件必须独立完成重选，不能等 2s 轮询掩盖延迟。
+    const run = await mount('chatgpt', html, 'header', { width: 360, height: 740 }, true)
+    let previousBelow = true
+    for (const width of [1440, 360, 320, 844, 1280]) {
+      await run.page.locator('[data-inkstone] .fab').click()
+      assert.equal(await run.page.locator('[data-inkstone] .panel').isVisible(), true)
+      await run.page.setViewportSize({ width, height: 740 })
+      await run.page.evaluate(() => window.dispatchEvent(new Event('resize')))
+      const fab = await run.page.locator('[data-inkstone] .fab').boundingBox()
+      const below = width <= 360
+      assert.equal(fab.y, below ? 64 : 10, `${layout}: resize 后立即采用新定位方式，不能等待维护轮询`)
+      assert.ok(fab.x >= 8 && fab.x + fab.width <= width - 8)
+      for (const button of await run.page.locator('header button').all()) {
+        const native = await button.boundingBox()
+        assert.ok(fab.x + fab.width <= native.x || native.x + native.width <= fab.x || fab.y + fab.height <= native.y || native.y + native.height <= fab.y)
+      }
+      await hit(run.page, await point(run.page, '.fab'), 'inkstone')
+      const staysOpen = below === previousBelow
+      assert.equal(await run.page.locator('[data-inkstone] .panel').isVisible(), staysOpen, '只在锚点或定位方式改变时收起面板')
+      if (!staysOpen) await run.page.locator('[data-inkstone] .fab').click()
+      const panel = await run.page.locator('[data-inkstone] .panel').boundingBox()
+      assert.ok(panel.x >= 16 && panel.x + panel.width <= width - 16)
+      assert.ok(panel.y >= fab.y + fab.height && panel.y + panel.height <= 740)
+      if (width === 320 || width === 1440) await run.page.screenshot({ path: join(outputDir, `chatgpt-resize-${layout}-${width}.png`) })
+      await run.page.locator('[data-inkstone] .fab').click()
+      previousBelow = below
+    }
+    assert.deepEqual(run.errors, [])
+    await run.context.close()
+    console.log(`PASS: ${layout} 顶栏实时缩放重选，按钮/面板不越界，同一定位方式保持展开`)
+  }
+
   for (const width of [320, 360, 390, 844, 1440]) {
     const run = await mount('chatgpt', '<header id="page-header"><button style="position:absolute;left:8px;top:10px;width:36px;height:36px">Menu</button><button style="position:absolute;left:52px;top:10px;width:120px;height:36px">Model</button><button data-testid="share-chat-button" style="position:absolute;right:90px;top:10px;width:60px;height:36px">Share</button><button data-testid="profile-button" style="position:absolute;right:16px;top:10px;width:44px;height:36px">Profile</button></header>', 'header', { width, height: 740 })
     const fab = await run.page.locator('[data-inkstone] .fab').boundingBox()

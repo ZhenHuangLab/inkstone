@@ -719,7 +719,7 @@ export function mountPanel(cb: PanelCallbacks): void {
     fab.classList.remove('in')
     closePanel()
   }
-  const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(syncPos)
+  const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => rebindAnchor())
   let anchorMissing = 0
   const rebindAnchor = (): boolean => {
     const target = findAnchor()
@@ -762,7 +762,8 @@ export function mountPanel(cb: PanelCallbacks): void {
     else bootDone = true
   }
   boot()
-  window.addEventListener('resize', syncPos, { passive: true })
+  // 视口或锚点尺寸变化可能跨过顶栏空间阈值，立即重选锚点与定位方式。
+  window.addEventListener('resize', rebindAnchor, { passive: true })
   // 维护期：500ms 纯位置同步（锚点平移不触发 ResizeObserver），2s 一次全量重找 + accent 重读；
   // 锚点回来（或迟到）时在这里重新现身
   let tick = 0
