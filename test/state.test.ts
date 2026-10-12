@@ -32,6 +32,62 @@ describe('watermark 存取', () => {
     clearWatermarks(['markdown'])
     expect(loadWatermark('markdown')).toEqual({})
   })
+
+  test('升级时将两种旧水位线迁移到 ChatGPT，增量仍跳过未变化项', () => {
+    for (const kind of ['markdown', 'json']) {
+      saveWatermark(kind, { a: '1' })
+      expect(loadWatermark(`chatgpt:${kind}`)).toEqual({ a: '1' })
+      expect(store.get(`inkstone:wm:chatgpt:${kind}`)).toBe('{"a":"1"}')
+      expect(selectChanged([{ id: 'a', update_time: '1' }], loadWatermark(`chatgpt:${kind}`))).toEqual([])
+      expect(loadWatermark(`claude:${kind}`)).toEqual({})
+    }
+  })
+
+  test('已有新水位线优先，重置后不复活旧记录', () => {
+    saveWatermark('markdown', { old: '1' })
+    saveWatermark('chatgpt:markdown', { fresh: '2' })
+    expect(loadWatermark('chatgpt:markdown')).toEqual({ fresh: '2' })
+    clearWatermarks(['chatgpt:markdown'])
+    expect(loadWatermark('chatgpt:markdown')).toEqual({})
+    expect(loadWatermark('markdown')).toEqual({ old: '1' })
+  })
+
+  test('迁移只执行一次，后续旧表变化不影响新表', () => {
+    saveWatermark('json', { a: '1' })
+    expect(loadWatermark('chatgpt:json')).toEqual({ a: '1' })
+    saveWatermark('json', { b: '2' })
+    expect(loadWatermark('chatgpt:json')).toEqual({ a: '1' })
+  })
+
+  test('旧数据损坏不报错，已有损坏新表也不恢复旧记录', () => {
+    store.set('inkstone:wm:json', '[1]')
+    expect(loadWatermark('chatgpt:json')).toEqual({})
+    saveWatermark('markdown', { a: '1' })
+    store.set('inkstone:wm:chatgpt:markdown', '{oops')
+    expect(loadWatermark('chatgpt:markdown')).toEqual({})
+  })
+
+  test('GM 存储升级和重置遵循相同规则', () => {
+    const gm = new Map<string, string>([['inkstone:wm:markdown', '{"a":"1"}']])
+    const globals = globalThis as unknown as {
+      GM_getValue?: (key: string) => string | undefined
+      GM_setValue?: (key: string, value: string) => void
+    }
+    const previousGet = globals.GM_getValue
+    const previousSet = globals.GM_setValue
+    globals.GM_getValue = (key) => gm.get(key)
+    globals.GM_setValue = (key, value) => { gm.set(key, value) }
+    try {
+      expect(loadWatermark('chatgpt:markdown')).toEqual({ a: '1' })
+      expect(gm.get('inkstone:wm:chatgpt:markdown')).toBe('{"a":"1"}')
+      expect(store.size).toBe(0)
+      clearWatermarks(['chatgpt:markdown'])
+      expect(loadWatermark('chatgpt:markdown')).toEqual({})
+    } finally {
+      globals.GM_getValue = previousGet
+      globals.GM_setValue = previousSet
+    }
+  })
 })
 
 describe('selectChanged 增量筛选', () => {

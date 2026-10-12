@@ -40,9 +40,15 @@ function storeSet(key: string, value: string): void {
 const keyFor = (kind: string) => `inkstone:wm:${kind}`
 
 export function loadWatermark(kind: string): Watermark {
+  let stored = storeGet(keyFor(kind))
+  // 老版本只有 ChatGPT。新命名空间存在（包括显式清空的 {}）时绝不再读旧表。
+  const legacyKind = /^chatgpt:(markdown|json)$/.exec(kind)?.[1]
+  const migrate = stored === null && legacyKind != null
+  if (migrate) stored = storeGet(keyFor(legacyKind!))
   try {
-    const parsed: unknown = JSON.parse(storeGet(keyFor(kind)) ?? '{}')
+    const parsed: unknown = JSON.parse(stored ?? '{}')
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      if (migrate) saveWatermark(kind, parsed as Watermark)
       return parsed as Watermark
     }
   } catch {

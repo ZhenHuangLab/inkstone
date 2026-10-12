@@ -1,3 +1,19 @@
+// ChatGPT backend-api 客户端。节奏控制在 core/fetcher，这里只负责端点与字段。
+
+import {
+  ApiError,
+  CancelledError,
+  createFetcher,
+  ensureAlive,
+  fetchBinary as fetchBinaryWith,
+  jitter,
+  mapConcurrent,
+  SizeLimitError,
+  sleep,
+  type CancelToken,
+  type Fetcher,
+  type ThrottleConfig,
+} from './core/fetcher'
 import type {
   ConversationDetail,
   ConversationListItem,
@@ -8,114 +24,35 @@ import type {
   SessionResponse,
 } from './types'
 
-class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'ApiError'
-  }
+export {
+  ApiError,
+  CancelledError,
+  SizeLimitError,
+  ensureAlive,
+  jitter,
+  mapConcurrent,
+  sleep,
+  type CancelToken,
 }
 
-export class CancelledError extends Error {
-  constructor() {
-    super('已取消')
-    this.name = 'CancelledError'
-  }
-}
-
-export interface CancelToken {
-  cancelled: boolean
-}
-
-export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
-const jitter = (base: number, spread = base): number => base + Math.random() * spread
-
-export function ensureAlive(cancel?: CancelToken): void {
-  if (cancel?.cancelled) throw new CancelledError()
-}
-
-// ===== 全局限速 =====
 // 后端是突发桶型限流，且持续高频抓取会触发账号级反滥用（实测：旧对话渐进式
-// 变 429→404、列表截断，恢复要数小时）。所以宁慢勿快：
-// 1) 所有请求共享起跑间距；2) 一旦吃到 429，间距自适应放大且不回落；
-// 3) 任何全局性 429 让全部 worker 共享冷却。
-const REQUEST_SPACING_BASE_MS = 800
-const REQUEST_SPACING_MAX_MS = 4000
-// 喘息暂停：贴合突发桶回填节奏，每 ~80 个请求整体歇一段
-const REST_EVERY_N_REQUESTS = 80
-const REST_DURATION_MS = 25_000
-let requestSpacingMs = REQUEST_SPACING_BASE_MS
-let requestsSinceRest = 0
-let nextSlotAt = 0
-let cooldownUntil = 0
-
-/** 429 后调用：全局节奏永久放慢（本次运行内不回落）。 */
-function slowDown(): void {
-  requestSpacingMs = Math.min(requestSpacingMs * 1.5, REQUEST_SPACING_MAX_MS)
+// 变 429→404、列表截断，恢复要数小时）。所以宁慢勿快。
+export const CHATGPT_THROTTLE: ThrottleConfig = {
+  spacingBaseMs: 800,
+  spacingMaxMs: 4000,
+  // 喘息暂停：贴合突发桶回填节奏，每 ~80 个请求整体歇一段
+  restEveryN: 80,
+  restDurationMs: 25_000,
+  maxAttempts: 7,
 }
 
-async function acquireSlot(cancel?: CancelToken): Promise<void> {
-  for (;;) {
-    ensureAlive(cancel)
-    const now = Date.now()
-    const target = Math.max(nextSlotAt, cooldownUntil)
-    if (now >= target) {
-      nextSlotAt = now + jitter(requestSpacingMs, requestSpacingMs * 0.4)
-      if (++requestsSinceRest >= REST_EVERY_N_REQUESTS) {
-        requestsSinceRest = 0
-        cooldownUntil = Math.max(cooldownUntil, now + REST_DURATION_MS)
-      }
-      return
-    }
-    await sleep(Math.min(target - now, 500))
-  }
-}
+const fetcher: Fetcher = createFetcher(CHATGPT_THROTTLE)
 
-// 跨 URL 连续 429 计数：区分「全局限流」和「条目级 429」的关键信号
-let global429Streak = 0
-
-// 429/5xx 指数退避重试；页内同源 fetch 自带登录 cookie。
-// 实测教训：部分对话会**永久性 429/404**（条目级问题，同一时刻其他请求全 200），
-// 把它们当全局限流会拖停整条流水线——所以：
-//  - 带 Retry-After 的 429 → 真全局信号，共享冷却
-//  - 不带 Retry-After 的 429 → 条目级，快速放弃（结尾重试环节还有一次机会）
-//  - 跨 URL 连续多次 429 → 无头全局限流的兜底，短冷却
-async function backoffFetch(url: string, init: RequestInit = {}, cancel?: CancelToken): Promise<Response> {
-  let delay = 2000
-  let headerless429s = 0
-  for (let attempt = 0; ; attempt++) {
-    await acquireSlot(cancel)
-    const res = await fetch(url, { credentials: 'include', ...init })
-    if (res.ok) {
-      global429Streak = 0
-      return res
-    }
-    const retryable = res.status === 429 || res.status >= 500
-    if (!retryable || attempt >= 7) throw new ApiError(res.status, `HTTP ${res.status}: ${url}`)
-    if (res.status === 429) {
-      global429Streak++
-      slowDown()
-      const retryAfterMs = Number(res.headers.get('retry-after')) * 1000
-      if (retryAfterMs > 0) {
-        cooldownUntil = Math.max(cooldownUntil, Date.now() + retryAfterMs)
-      } else if (global429Streak >= 5) {
-        cooldownUntil = Math.max(cooldownUntil, Date.now() + 15_000)
-      } else {
-        headerless429s++
-        if (headerless429s > 1) throw new ApiError(429, `HTTP 429（条目级，快速放弃）: ${url}`)
-        await sleep(jitter(delay))
-      }
-    } else {
-      await sleep(jitter(delay))
-    }
-    delay = Math.min(delay * 2, 30_000)
-  }
-}
+/** 当前节奏快照（面板用来显示限流观测）。 */
+export const throttleStats = (): ReturnType<Fetcher['stats']> => fetcher.stats()
 
 export async function getAccessToken(cancel?: CancelToken): Promise<string> {
-  const res = await backoffFetch(`${location.origin}/api/auth/session`, {}, cancel)
+  const res = await fetcher.request(`${location.origin}/api/auth/session`, {}, cancel)
   const data = (await res.json()) as SessionResponse
   if (!data.accessToken) throw new Error('拿不到 accessToken：请确认已登录 ChatGPT 后重试')
   return data.accessToken
@@ -123,35 +60,31 @@ export async function getAccessToken(cancel?: CancelToken): Promise<string> {
 
 const auth = (token: string) => ({ Authorization: `Bearer ${token}` })
 
-async function listConversationsPage(
+export async function listConversationsPage(
   token: string,
   offset: number,
   limit: number,
   cancel?: CancelToken,
 ): Promise<ConversationListPage> {
   const url = `${location.origin}/backend-api/conversations?offset=${offset}&limit=${limit}&order=updated`
-  const res = await backoffFetch(url, { headers: auth(token) }, cancel)
+  const res = await fetcher.request(url, { headers: auth(token) }, cancel)
   return (await res.json()) as ConversationListPage
 }
 
 // ===== Projects（gizmo）=====
 // 主列表接口只返回侧栏「Chats」那份平铺列表，project 里的会话必须按 project
 // 逐个走 gizmos 接口拿。两个坐标系完全不同：主列表是 offset，gizmos 是字符串游标。
-const PROJECT_PAGE_LIMIT = 50 // gizmos 接口的 limit 上限比主列表小
+const PROJECT_PAGE_LIMIT = 50
 
-// gizmo_id → project 名：对话详情只带 gizmo_id，名字要靠 sidebar 接口换；
-// listProjects 每拉一次就往这里补，读的一方不用关心何时拉的
 const projectNames = new Map<string, string>()
 
 /** 已知的 project 名（需先 listProjects 拉过）；不在 project 侧栏里的 gizmo 返回 undefined。 */
 export const projectNameOf = (gizmoId: string | null | undefined): string | undefined =>
   gizmoId ? projectNames.get(gizmoId) : undefined
 
-// 面板打开时「来源」下拉与归并分页器会几乎同时要这份列表，并发的合成一次请求；
-// 只合并「正在飞」的，不缓存已完成的结果，避免新建项目后拉到陈数据
+// 面板来源下拉与归并分页器会几乎同时取列表；只合并正在进行的请求，避免长期缓存陈数据。
 let projectsInFlight: Promise<ProjectInfo[]> | null = null
 
-/** 拉全部 project（顺带填好 gizmo_id → 名字的映射）。 */
 export function listProjects(token: string, cancel?: CancelToken): Promise<ProjectInfo[]> {
   projectsInFlight ??= fetchProjects(token, cancel).finally(() => {
     projectsInFlight = null
@@ -164,11 +97,10 @@ async function fetchProjects(token: string, cancel?: CancelToken): Promise<Proje
   let cursor: number | null = null
   for (;;) {
     ensureAlive(cancel)
-    // conversations_per_gizmo=0：只要 project 本身，别顺带回一堆用不上的会话
     const url =
       `${location.origin}/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0` +
       (cursor == null ? '' : `&cursor=${encodeURIComponent(String(cursor))}`)
-    const res = await backoffFetch(url, { headers: auth(token) }, cancel)
+    const res = await fetcher.request(url, { headers: auth(token) }, cancel)
     const page = (await res.json()) as GizmoSidebarPage
     for (const entry of page.items ?? []) {
       const g = entry.gizmo?.gizmo
@@ -191,7 +123,7 @@ async function listProjectConversationsPage(
   const url =
     `${location.origin}/backend-api/gizmos/${encodeURIComponent(gizmoId)}/conversations` +
     `?cursor=${encodeURIComponent(cursor)}&limit=${PROJECT_PAGE_LIMIT}`
-  const res = await backoffFetch(url, { headers: auth(token) }, cancel)
+  const res = await fetcher.request(url, { headers: auth(token) }, cancel)
   return (await res.json()) as GizmoConversationsPage
 }
 
@@ -200,12 +132,9 @@ export interface ConversationPager {
   next(): Promise<{ items: ConversationListItem[]; done: boolean }>
 }
 
-// 分页来源的两个固定值，其余按 gizmo id 视为单个 project。
-// 值必须与 ui.ts 面板里「来源」下拉的 option value 一致。
 const SOURCE_ALL = 'all'
 const SOURCE_MAIN = 'main'
 
-/** 归一到 epoch 秒：列表接口给 ISO 字符串，详情接口给数字；取不到时间的排最后。 */
 function timeOf(i: ConversationListItem): number {
   const t = i.update_time ?? i.create_time
   if (typeof t === 'number') return t
@@ -216,16 +145,13 @@ function timeOf(i: ConversationListItem): number {
   return -Infinity
 }
 
-/** 一个来源的页流：内部缓冲一页，对外只看得到队头。 */
 interface SourceStream {
   done: boolean
   peek(): ConversationListItem | undefined
   take(): ConversationListItem
-  /** 补一页；拿不到新页就置 done */
   fill(): Promise<void>
 }
 
-/** nextPage 返回 null 表示该源到底（空数组只是本页无内容，还要再问一次）。 */
 function makeStream(nextPage: () => Promise<ConversationListItem[] | null>): SourceStream {
   const buf: ConversationListItem[] = []
   const stream: SourceStream = {
@@ -241,17 +167,7 @@ function makeStream(nextPage: () => Promise<ConversationListItem[] | null>): Sou
   return stream
 }
 
-/**
- * 多源惰性分页器：主列表（offset 分页）与每个 project（字符串游标）各是一条流，
- * 按 update_time 做 k 路归并，交出一条严格时间倒序的列表（前提：各源自身按更新
- * 时间倒序，两个接口都是）。代价是首屏要先把每个源都拉一页（N+2 个请求），
- * 之后大多数 next() 只消耗缓冲区。
- * source 可把范围收窄到单一来源（面板上的「来源」下拉）；指定单个 project 时
- * 连 project 列表都不用拉，归并退化成单条流。
- * 跨源按 id 去重（主列表哪天开始包含 project 会话也不会重复导出）。
- * 主列表的终止条件只认空页（服务端会按自己的上限截页，短页不代表到底），且
- * 列表索引实测会瞬时降级提前返回空页，所以空页要隔几秒重试，连续空 3 次才算到底。
- */
+/** 主列表与各 project 的多源惰性分页器，按更新时间倒序归并并按 id 去重。 */
 export function createConversationPager(
   token: string,
   cancel?: CancelToken,
@@ -265,7 +181,6 @@ export function createConversationPager(
   let streams: SourceStream[] | null = null
   let done = false
 
-  /** 主列表一页；null = 主列表到底 */
   async function mainPage(): Promise<ConversationListItem[] | null> {
     for (;;) {
       ensureAlive(cancel)
@@ -273,7 +188,6 @@ export function createConversationPager(
       try {
         page = await listConversationsPage(token, offset, limit, cancel)
       } catch (e) {
-        // limit 上限历史上收紧过；非限流的 4xx 先降到 50 重试一次
         if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 429 && limit > 50) {
           limit = 50
           continue
@@ -282,7 +196,6 @@ export function createConversationPager(
       }
       const items = page.items ?? []
       if (items.length === 0) {
-        // 首页即空 = 账号真没对话；否则可能是列表索引瞬时降级，隔几秒重试确认
         if (offset === 0 || emptyRetries >= 2) return null
         emptyRetries++
         await sleep(4000 * emptyRetries)
@@ -294,7 +207,6 @@ export function createConversationPager(
     }
   }
 
-  /** 某个 project 的页源（自带游标）；null = 该 project 到底 */
   function projectPages(gizmoId: string): () => Promise<ConversationListItem[] | null> {
     let cursor: string | null = '0'
     return async () => {
@@ -302,7 +214,6 @@ export function createConversationPager(
       ensureAlive(cancel)
       const page = await listProjectConversationsPage(token, gizmoId, cursor, cancel)
       cursor = page.cursor ?? null
-      // gizmos 接口的条目不保证带 gizmo_id，补上才能在下游认出归属
       return (page.items ?? []).map((i) => ({ ...i, gizmo_id: i.gizmo_id ?? gizmoId }))
     }
   }
@@ -319,7 +230,6 @@ export function createConversationPager(
       if (done) return { items: [], done: true }
       streams ??= await buildStreams()
       for (;;) {
-        // 每个未到底的源都得有队头，否则没法知道谁才是全局最新的那条
         for (const s of streams) {
           while (!s.done && s.peek() === undefined) await s.fill()
         }
@@ -335,16 +245,13 @@ export function createConversationPager(
             done = true
             break
           }
-          // offset 翻页 + order=updated 期间列表会漂移，加上跨源重叠，统一在这里去重
           const item = best.take()
           if (!seen.has(item.id)) {
             seen.add(item.id)
             out.push(item)
           }
-          // 队头空了又没到底：再取就得发请求，这一页到此为止，保住惰性加载
           if (best.peek() === undefined && !best.done) break
         }
-        // 整页都是重复时继续翻，不把空页交给调用方（会被当成到底）
         if (out.length > 0 || done) return { items: out, done }
       }
     },
@@ -371,7 +278,7 @@ export async function fetchConversation(
   id: string,
   cancel?: CancelToken,
 ): Promise<ConversationDetail> {
-  const res = await backoffFetch(
+  const res = await fetcher.request(
     `${location.origin}/backend-api/conversation/${id}`,
     { headers: auth(token) },
     cancel,
@@ -390,7 +297,7 @@ export async function resolveFileDownload(
   fileId: string,
   cancel?: CancelToken,
 ): Promise<FileDownloadTarget> {
-  const res = await backoffFetch(
+  const res = await fetcher.request(
     `${location.origin}/backend-api/files/${fileId}/download`,
     { headers: auth(token) },
     cancel,
@@ -406,57 +313,10 @@ export async function resolveFileDownload(
   return { url: data.download_url, filename }
 }
 
-export class SizeLimitError extends Error {
-  constructor(readonly actualBytes: number) {
-    super(`附件大小 ${actualBytes} 字节超出上限`)
-    this.name = 'SizeLimitError'
-  }
-}
-
-/** 附件元数据里的 size 不可靠（library 文件报 0），上限以实际传输为准。 */
-export async function fetchBinary(
+export function fetchBinary(
   url: string,
   cancel?: CancelToken,
   maxBytes?: number,
 ): Promise<{ bytes: Uint8Array; contentType: string | null }> {
-  const res = await backoffFetch(url, {}, cancel)
-  const declared = Number(res.headers.get('content-length'))
-  if (maxBytes != null && declared > maxBytes) {
-    try {
-      await res.body?.cancel()
-    } catch {
-      /* 取消流失败无所谓 */
-    }
-    throw new SizeLimitError(declared)
-  }
-  const bytes = new Uint8Array(await res.arrayBuffer())
-  if (maxBytes != null && bytes.length > maxBytes) throw new SizeLimitError(bytes.length)
-  return { bytes, contentType: res.headers.get('content-type') }
-}
-
-// 简易并发池：fn 抛错即整体中止（逐条的容错由调用方在 fn 里自己 catch）
-export async function mapConcurrent<T>(
-  items: readonly T[],
-  concurrency: number,
-  fn: (item: T, index: number) => Promise<void>,
-  cancel?: CancelToken,
-): Promise<void> {
-  let next = 0
-  let aborted: unknown = null
-  const n = Math.max(1, Math.min(concurrency, items.length))
-  const worker = async (): Promise<void> => {
-    while (aborted == null && !cancel?.cancelled) {
-      const i = next++
-      if (i >= items.length) return
-      try {
-        await fn(items[i]!, i)
-      } catch (e) {
-        aborted = e
-        return
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: n }, () => worker()))
-  if (aborted != null) throw aborted
-  ensureAlive(cancel)
+  return fetchBinaryWith(fetcher, url, cancel, maxBytes)
 }

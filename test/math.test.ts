@@ -36,6 +36,12 @@ describe('convertMath', () => {
     expect(convertMath('价格 \\$100')).toBe('价格 \\$100')
   })
 
+  test('关闭货币转义时保留 Claude 原生数字开头公式', () => {
+    expect(convertMath('解方程 $2x+1=5$，复杂度 $10^{6}$ 次', false)).toBe(
+      '解方程 $2x+1=5$，复杂度 $10^{6}$ 次',
+    )
+  })
+
   test('转换产出的公式 $ 不被货币转义误伤', () => {
     expect(convertMath('\\(3x\\)')).toBe('$3x$')
   })

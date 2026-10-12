@@ -2,9 +2,9 @@
 
 # Inkstone · 「砚」
 
-**在 chatgpt.com 页内一键批量导出全部对话为 Obsidian 友好的 Markdown——全程本地处理。**
+**在 chatgpt.com / claude.ai 页内一键导出对话为 Obsidian 友好的 Markdown——全程本地处理。**
 
-*砚是把原料研磨成墨、供你书写的石头——Inkstone 帮助你把 GPT 的原始输出研磨成能写进笔记的墨。*
+*砚是把原料研磨成墨、供你书写的石头——Inkstone 帮助你把模型的原始输出研磨成能写进笔记的墨。*
 
 [![release](https://img.shields.io/github/v/release/ZhenHuangLab/inkstone)](https://github.com/ZhenHuangLab/inkstone/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/ZhenHuangLab/inkstone/total)](https://github.com/ZhenHuangLab/inkstone/releases)
@@ -20,7 +20,7 @@
   &nbsp;→&nbsp;
   <a href="https://github.com/ZhenHuangLab/inkstone/releases/latest/download/inkstone.user.js"><b>② 一键安装 Inkstone</b></a>
   &nbsp;→&nbsp;
-  <b>③ 打开 chatgpt.com，点 ⤓</b>
+  <b>③ 打开 chatgpt.com 或 claude.ai，点 ⤓</b>
 </p>
 
 ---
@@ -29,7 +29,24 @@
 
 ChatGPT 的对话历史里沉淀着真正的工作成果，但想把它们搬进 vault 很痛苦：官方导出是一坨原始 JSON——tool/system 消息被剥掉（Canvas、代码解释器的产出根本不在里面），部分附件在服务端已经过期，公式是 Obsidian 不认的 `\( \)` 定界符，联网搜索引用变成私有区 Unicode 乱码。手动复制粘贴撑不过十条对话，更别说上千条。
 
-Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backend API 抓取对话，然后全部在浏览器本地转换——数据不出页面。产出的 Markdown 在 Obsidian 里原生可读：每轮对话有真实标题、`$` / `$$` 公式、还原后的引用、下载好的图片、干净的 frontmatter。
+Inkstone 直接运行在页内，通过应用自己使用的 backend API 抓取对话，然后全部在浏览器本地转换——数据不出页面。产出的 Markdown 在 Obsidian 里原生可读：每轮对话有真实标题、`$` / `$$` 公式、还原后的引用、下载好的图片、干净的 frontmatter。
+
+## 支持的站点
+
+| | ChatGPT | Claude |
+| --- | --- | --- |
+| 导出当前对话 | ✅ | ✅ |
+| 批量 / 全部导出 | ✅ | ✅ 保守风控 |
+| 增量同步 | ✅ | ✅ |
+| 富文档还原 | Canvas patch 重放 | Artifact 折叠还原终稿 |
+| 思维链 / 工具痕迹 | ✅ 可开关 | ✅ 可开关 |
+| 附件 | 图片与文件下载 | 图片下载、文档链接、文本抽取件内联 |
+
+**Claude 批量导出采用更保守的独立风控。** Claude 的限流画像仍没有大样本实测，
+因此不照搬 ChatGPT 参数：固定单并发、请求间隔从 1500ms 起、每 40 次请求休息 30 秒，
+不对整批失败项做第二轮重试。一次带 `Retry-After` 的全局限流信号、累计 3 次 429、
+1000 次 HTTP 尝试或异常失败率过高都会保护性中止；已经成功的对话照常落盘，未完成项
+不推进水位线，下次增量导出会继续补齐。
 
 ## 截图
 
@@ -66,6 +83,8 @@ Inkstone 直接运行在 chatgpt.com 页内，通过应用自己使用的 backen
 - 用户上传的文件 ≤2MB 下载并链接，超限的留说明占位
 - **目录可定制**：笔记子文件夹（默认 `conversations`，可 `a/b` 嵌套、可留空写根目录）与附件子文件夹（默认 `attachments`，相对笔记所在目录、可留空与笔记同层）均可在设置里改；附件链接是相对 .md 的严格相对路径，GitHub/VS Code 预览同样可用
 - 「下载附件」开关：关闭后纯文本导出，请求量骤减
+- 附件下载失败会在正文和失败汇总中说明，并保留增量重试机会；同一遍抓取中，多个对话共享同一附件时只尝试一次。
+- 升级旧版后，不带 UUID 的 Claude 附件在重导时使用新的安全文件名；未重导笔记继续使用旧链接，已有附件不会自动改名或删除。
 
 ### Projects（项目）
 
@@ -96,11 +115,12 @@ bun run build        # 产物 dist/inkstone.user.js，拖进 Tampermonkey 即可
 
 ## 使用
 
-打开 chatgpt.com（已登录）→ 点**顶栏 Share 左侧的 ⤓ 按钮** → 选 **Markdown zip** 或**原始 JSON zip** → 解压到 Obsidian vault。
+打开 chatgpt.com 或 claude.ai（已登录）→ 点**顶栏 Share 左侧的 ⤓ 按钮** → 选 **Markdown zip** 或**原始 JSON zip** → 解压到 Obsidian vault。
 
 - 按钮位置可换（面板 → 高级设置）：顶栏 Share 旁，或输入框旁的玻璃圆钮
-- UI 主题色自动跟随 ChatGPT 的外观设置（明暗 + accent color）
+- UI 明暗自动跟随所在站点；ChatGPT 跟随用户选择的重点色，Claude 使用品牌橙色
 - 可随时取消；单条对话失败不中断整体导出，失败汇总进 `_failures.json`
+- Claude 批量默认单并发慢速执行；触发保护性中止后不要立刻重跑，先按界面提示等待
 
 ## 离线 CLI
 
@@ -125,9 +145,16 @@ bun run typecheck
 bun run build
 ```
 
+claude.ai 的 CSP 可能拦掉 dev server 的脚本，Claude 端的改动请用 `bun run build` 的产物
+装进 Tampermonkey 验证，别只依赖 `bun run dev`。
+
+架构：`src/core/` 站点无关（中间表示、渲染器、带限速的取数内核），
+`src/sites/<站点>/` 收纳一家的端点、字段与 DOM 知识。新增站点 = 新增一个适配器，
+不改编排与界面。详见 [PLAN.md](./PLAN.md) 的 P5 一节。
+
 ## 路线图
 
-MV3 浏览器扩展（脱离 Tampermonkey、上架商店）、Claude / Gemini 适配。已完成：增量同步、直写 vault、设置面板、Canvas patch 重放、离线 CLI。详见 [PLAN.md](./PLAN.md)。
+MV3 浏览器扩展（脱离 Tampermonkey、上架商店）、Gemini 适配。已完成：多站点适配器架构、Claude 批量与增量导出、直写 vault、设置面板、Canvas patch 重放、Artifact 折叠还原、离线 CLI。详见 [PLAN.md](./PLAN.md)。
 
 ## 许可证
 
