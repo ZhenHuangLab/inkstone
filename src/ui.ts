@@ -186,6 +186,8 @@ const STYLE = `
     width: var(--header-fab-size, 36px); height: var(--header-fab-size, 36px); border-radius: 8px;
     background: transparent; border-color: transparent; box-shadow: none;
     -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
+    /* 缩放后旧坐标可能已在视口外，顶栏定位直接到位，不沿旧坐标过渡。 */
+    transition: background-color .2s var(--ease), color .2s var(--ease);
   }
   /* ChatGPT 新顶栏本身是全宽 surface；给入口一层轻底色，避免图标与 surface 融在一起。 */
   :host([data-site="chatgpt"][data-pos="header"]) .fab {
@@ -239,6 +241,7 @@ const STYLE = `
     right: clamp(16px, var(--fab-right, 20px), calc(100vw - 304px - 16px));
     max-height: min(72vh, calc(100vh - var(--panel-top, 56px) - 24px));
     transform-origin: 100% 0;
+    transition: none;
   }
   :host([data-pos="header"]) .panel.open { animation-name: drop; }
   @keyframes drop { from { opacity: 0; transform: translateY(-10px) scale(.97); } }
@@ -660,8 +663,8 @@ export function mountPanel(cb: PanelCallbacks): void {
   //   header：贴顶栏 Share 按钮左侧（没有 Share 时贴 header 动作区），面板向下展开（幽灵钮）。
   // 没有默认位置：找不到锚点就不出现；锚点短暂消失（切换会话会卸载重挂）位置冻结原地，
   // 消失 4s+（设置页/改版）才整体隐藏——绝不回退到固定角落。
-  // 开销：ResizeObserver 只在锚点尺寸变化时触发；轮询每次一个 querySelector +
-  // getBoundingClientRect，样式仅在数值变化时写入。
+  // 视口或锚点尺寸改变时重选；维护轮询每 500ms 读取绑定矩形，每 2s 重找锚点。
+  // 样式仅在数值变化时写入。
   let mode: 'composer' | 'header' = cb.settings.values.fabPos
   host.dataset['pos'] = mode
   // Claude 顶栏原生动作实测为 28px；ChatGPT 保持原有 36px。
@@ -720,7 +723,7 @@ export function mountPanel(cb: PanelCallbacks): void {
     closePanel()
   }
   const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => rebindAnchor())
-  let anchorMissing = 0
+  let anchorMissingSince: number | null = null
   const rebindAnchor = (): boolean => {
     const target = findAnchor()
     const c = target?.element ?? null
@@ -733,10 +736,11 @@ export function mountPanel(cb: PanelCallbacks): void {
       if (c) ro?.observe(c)
     }
     if (anchor?.isConnected) {
-      anchorMissing = 0
+      anchorMissingSince = null
       return syncPos()
-    } else if (++anchorMissing >= 2) {
-      hideFab() // 连续两轮（约 4s）没有锚点：整个入口隐藏
+    } else {
+      anchorMissingSince ??= Date.now()
+      if (Date.now() - anchorMissingSince >= 4000) hideFab()
     }
     return false
   }

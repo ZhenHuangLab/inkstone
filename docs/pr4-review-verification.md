@@ -1,20 +1,25 @@
 # PR #4 审查核实与登录环境诊断
 
-核实对象：[PR #4 上游回复](https://github.com/ZhenHuangLab/inkstone/pull/4#issuecomment-5910961397)，时间为 2026-09-30，审查基线为独立提交 `bacd655`。
+本轮复核：[PR #4 最新审查](https://github.com/ZhenHuangLab/inkstone/pull/4#pullrequestreview-5478266420)，审查基线为 `6e49641`。上游已认可密集顶栏、共享护栏及锚点契约修复，剩余意见为共享导出代码的合并耦合和缩放后的短暂定位延迟。
 
 ## 代码结论
 
-上游指出的冲突成立。`bacd655` 给共享 host 无条件设置最高 `z-index`、`isolation: isolate` 和 `position: fixed`。#2 的 `3a47bb6` 只降低按钮与面板到 40/41；同步后这两个子元素仍被包在最高层 host 中，无法排到 Claude 的页面浮层之下。
+共享附件修复、完整导出回归和命名兼容说明已移入 #2，并同步进本分支。#4 相对 #2 只保留 13 个界面相关文件，不再改动 `src/main.ts`、导出回归脚本及 README。普通 merge 和 squash 后重放界面增量的验证与步骤见 [PR 范围与合并顺序](./pr-merge-order.md)。
 
-本分支已合入 #2 的最新修复。最高层 overlay 的 CSS 与内联设置均限定到 ChatGPT。Claude 保留原有的非定位 host，按钮与面板仍用 40/41。不能仅把 Claude host 改成 `z-index: auto`：`position: fixed` 本身也会建立层叠上下文。
+已复现缩放延迟：360px 密集顶栏扩至 1440px 后，旧代码仍在 y=64 的下方位置，等待 2s 重绑才回到 y=10。`resize` 和锚点 ResizeObserver 现在立即重选锚点与定位方式；锚点或方式变化时收起面板，同一方式下保持展开。位置同步继续使用一次绑定的锚点/方式组合。
+
+推送前自审补充修复两处实际复现的问题：普通动画模式的旧 right/bottom 过渡会在缩放后短暂把按钮移出视口，顶栏按钮与面板现在直接采用新坐标，保留颜色及展开动画；频繁重绑会将按调用次数计算的锚点缺失提前判为超时，现改为实际持续缺失 4s 后才隐藏。两处均有修复前失败、修复后通过的浏览器用例。
+
+最高层 overlay 的 CSS 与内联设置仍仅限 ChatGPT。Claude 保留非定位 host 与按钮/面板的 40/41，使页面浮层可以覆盖。密集顶栏没有空间时按钮放到完整顶栏下方，避免越界或覆盖原生控件。
 
 ## 自动验证范围
 
-本次验证：`bun test` 188 pass / 0 fail；`bun run typecheck`、`bun run build` 及下述 Chromium 检查通过。
+2026-10-12（Asia/Hong_Kong）本次验证：`bun test` 203 pass / 0 fail；`bun run typecheck`、`bun run build` 通过。UI Chromium 回归 37 个场景、导出 Chromium 回归 15 个场景通过。
 
 [check-ui-browser.mjs](../scripts/check-ui-browser.mjs) 使用实际构建的 userscript 和 Chromium，并拦截全部页面请求，验证：
 
 - ChatGPT 的会话/新会话 × 聊天/工作四种合成 DOM，包含隐藏重复锚点与错误位置的 header，实际调用适配器选择锚点。
+- 密集顶栏及宽动作组在普通动画/减少动画两种偏好下分别于 1440/360/320/844/1280px 连续缩放；暂停维护计时器验证立即重选，实际点击检查面板收起/保持展开、按钮避让和视口边界。另检查重复 resize、锚点持续缺失 4s 隐藏与恢复。原有 360x740、390x844、844x390、1440x900 静态布局继续覆盖。
 - 顶栏和输入框两种按钮位置、位置切换后的收起，以及 URL 切换后的收起。
 - ChatGPT 按钮位于高层顶栏 surface 之上，页面 author CSS 不会覆盖关键 host 设置；浏览器原生 modal 位于 Inkstone 之上。
 - Claude host 不建立独立层叠上下文，普通页面上按钮可点击；`z-index: 50` 页面浮层打开时实际覆盖按钮和面板，关闭后恢复。

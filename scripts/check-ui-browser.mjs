@@ -29,8 +29,8 @@ const fixtures = [
     composer: '<div class="composer"><div data-composer-markdown contenteditable="true" role="textbox"></div></div>', headerLeft: null },
 ]
 
-async function mount(site, html, mode = 'header', viewport = { width: 1280, height: 900 }, pauseTimers = false) {
-  const context = await browser.newContext({ viewport, reducedMotion: 'reduce' })
+async function mount(site, html, mode = 'header', viewport = { width: 1280, height: 900 }, pauseTimers = false, motion = 'reduce') {
+  const context = await browser.newContext({ viewport, reducedMotion: motion })
   const page = await context.newPage()
   if (pauseTimers) await page.clock.install()
   const errors = []
@@ -61,12 +61,31 @@ async function hit(page, position, expected) {
 }
 
 try {
-  for (const layout of ['dense', 'actions']) {
+  const transient = await mount('chatgpt', '<header id="page-header"></header>', 'header', { width: 1440, height: 900 }, true)
+  await transient.page.evaluate(() => {
+    document.querySelector('header').remove()
+    for (let i = 0; i < 3; i++) window.dispatchEvent(new Event('resize'))
+  })
+  assert.equal(await transient.page.locator('[data-inkstone] .fab.in').count(), 1, '锚点短暂消失时，重复 resize 不能提前隐藏入口')
+  await transient.page.clock.runFor(3999)
+  await transient.page.evaluate(() => window.dispatchEvent(new Event('resize')))
+  assert.equal(await transient.page.locator('[data-inkstone] .fab.in').count(), 1)
+  await transient.page.clock.runFor(1)
+  await transient.page.evaluate(() => window.dispatchEvent(new Event('resize')))
+  assert.equal(await transient.page.locator('[data-inkstone] .fab.in').count(), 0, '锚点持续消失 4s 后隐藏入口')
+  await transient.page.evaluate(() => document.body.insertAdjacentHTML('afterbegin', '<header id="page-header"></header>'))
+  await transient.page.clock.runFor(2000)
+  assert.equal(await transient.page.locator('[data-inkstone] .fab.in').count(), 1)
+  assert.deepEqual(transient.errors, [])
+  await transient.context.close()
+  console.log('PASS: 频繁 resize 不缩短锚点缺失的 4s 宽限期，持续消失后隐藏、恢复后重新显示')
+
+  for (const { layout, motion } of ['reduce', 'no-preference'].flatMap((motion) => ['dense', 'actions'].map((layout) => ({ layout, motion })))) {
     const html = layout === 'dense'
       ? '<header id="page-header"><button style="position:absolute;left:8px;top:10px;width:36px;height:36px">Menu</button><button style="position:absolute;left:52px;top:10px;width:120px;height:36px">Model</button><button data-testid="share-chat-button" style="position:absolute;right:90px;top:10px;width:60px;height:36px">Share</button><button data-testid="profile-button" style="position:absolute;right:16px;top:10px;width:44px;height:36px">Profile</button></header>'
       : '<header id="page-header"><div id="conversation-header-actions" class="actions" style="width:min(330px,calc(100% - 24px));display:flex"><button>Files</button><button>Share</button><button>Profile</button></div></header>'
     // 暂停维护轮询；真实 resize 事件必须独立完成重选，不能等 2s 轮询掩盖延迟。
-    const run = await mount('chatgpt', html, 'header', { width: 360, height: 740 }, true)
+    const run = await mount('chatgpt', html, 'header', { width: 360, height: 740 }, true, motion)
     let previousBelow = true
     for (const width of [1440, 360, 320, 844, 1280]) {
       await run.page.locator('[data-inkstone] .fab').click()
@@ -88,13 +107,13 @@ try {
       const panel = await run.page.locator('[data-inkstone] .panel').boundingBox()
       assert.ok(panel.x >= 16 && panel.x + panel.width <= width - 16)
       assert.ok(panel.y >= fab.y + fab.height && panel.y + panel.height <= 740)
-      if (width === 320 || width === 1440) await run.page.screenshot({ path: join(outputDir, `chatgpt-resize-${layout}-${width}.png`) })
+      if (width === 320 || width === 1440) await run.page.screenshot({ path: join(outputDir, `chatgpt-resize-${layout}-${motion}-${width}.png`) })
       await run.page.locator('[data-inkstone] .fab').click()
       previousBelow = below
     }
     assert.deepEqual(run.errors, [])
     await run.context.close()
-    console.log(`PASS: ${layout} 顶栏实时缩放重选，按钮/面板不越界，同一定位方式保持展开`)
+    console.log(`PASS: ${layout} ${motion} 顶栏实时缩放重选，按钮/面板不越界，同一定位方式保持展开`)
   }
 
   for (const width of [320, 360, 390, 844, 1440]) {
