@@ -84,6 +84,8 @@ unfinished ones do not advance the watermark and are picked up by the next incre
 - User-uploaded files ≤ 2 MB are downloaded and linked; larger ones get a placeholder note
 - Folder layout is customizable in settings: the notes subfolder (default `conversations`, nestable as `a/b`, empty = vault root) and the attachments subfolder (default `attachments`, relative to the notes folder, empty = same level as notes). Attachment links are strict relative paths, so GitHub and VS Code previews work too
 - A "download attachments" toggle: turn it off for text-only export with drastically fewer requests
+- Failed downloads leave a note in the conversation and the failure report, and remain eligible for incremental retry. An attachment shared across conversations is attempted once per fetch pass.
+- After upgrading, Claude attachments without a UUID use new safe filenames when their conversations are re-exported. Notes that are not re-exported keep their existing links; existing attachment files are not automatically renamed or deleted.
 
 ### Projects
 

@@ -308,6 +308,9 @@ function createProcessor(
 ) {
   // fileId → 正文替换文本；同一附件跨对话只下载一次
   const assetCache = new Map<string, string>()
+  type AssetResolution = { replacement: string; failed: boolean }
+  // 同一遍共享成功、失败及进行中的尝试；下一遍清空，失败结果不跨遍缓存。
+  const assetAttempts = new Map<string, Promise<AssetResolution>>()
   const maxFileBytes = opts.maxFileMB * 1024 * 1024
   const notesPrefix = opts.notesDir ? `${opts.notesDir}/` : ''
   const attachPrefix = opts.attachmentsDir ? `${opts.attachmentsDir}/` : ''
@@ -317,9 +320,18 @@ function createProcessor(
   let discoveryFailed = 0
   const resolveIRContext = site.createIRContextResolver?.(session, cancel)
 
-  async function resolveAsset(a: AssetRef): Promise<{ replacement: string; failed: boolean }> {
+  function resolveAsset(a: AssetRef): Promise<AssetResolution> {
     const cached = assetCache.get(a.fileId)
-    if (cached != null) return { replacement: cached, failed: false }
+    if (cached != null) return Promise.resolve({ replacement: cached, failed: false })
+    let attempt = assetAttempts.get(a.fileId)
+    if (!attempt) {
+      attempt = downloadAsset(a)
+      assetAttempts.set(a.fileId, attempt)
+    }
+    return attempt
+  }
+
+  async function downloadAsset(a: AssetRef): Promise<AssetResolution> {
     let replacement: string
     // 元数据 size 不可靠（library 文件报 0），仅作快速跳过；真正的护栏在 fetchBinary
     const cap = a.kind === 'file' ? maxFileBytes : MAX_IMAGE_BYTES
@@ -420,7 +432,7 @@ function createProcessor(
     return { path, incompleteReason }
   }
 
-  return { processConversation, assetSummary }
+  return { processConversation, assetSummary, beginPass: () => assetAttempts.clear() }
 }
 
 /** 只导出当前打开的对话：zip 目标下无附件裸 .md、有附件小 zip；folder 目标直写 vault。 */
@@ -561,6 +573,7 @@ async function exportItems(
     untried: SiteConversationItem[]
     aborted: boolean
   }> {
+    proc.beginPass()
     const failed: SiteConversationItem[] = []
     const untried: SiteConversationItem[] = []
     let done = 0
