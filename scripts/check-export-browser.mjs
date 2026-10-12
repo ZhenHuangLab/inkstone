@@ -157,9 +157,68 @@ async function exportAll(page) {
   return files
 }
 
+async function checkClaudeSharedAssetRetry() {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true })
+  await context.addCookies([{ name: 'lastActiveOrg', value: team, url: 'https://claude.ai' }])
+  const page = await context.newPage()
+  const sharedIds = [id, '11111111-1111-4111-8111-111111111112', '11111111-1111-4111-8111-111111111113']
+  const errors = []
+  let assetAvailable = false
+  let assetAttempts = 0
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.route('**/*', async (route) => {
+    const url = new URL(route.request().url())
+    if (!url.pathname.startsWith('/api/')) return route.fulfill({ contentType: 'text/html', body })
+    if (url.pathname === '/api/organizations') return route.fulfill({ json: [{ uuid: team, name: 'Team' }] })
+    if (url.pathname === '/api/shared/report') {
+      assetAttempts++
+      return assetAvailable
+        ? route.fulfill({ contentType: 'text/plain', body: 'Recovered shared attachment' })
+        : route.fulfill({ status: 403, body: 'Unavailable shared attachment' })
+    }
+    if (url.pathname === `/api/organizations/${team}/chat_conversations`) return route.fulfill({ json: sharedIds.map((uuid) => ({ uuid, name: uuid, updated_at: updated })) })
+    const uuid = url.pathname.split('/').at(-1)
+    assert.ok(sharedIds.includes(uuid), '共享附件场景只能请求指定对话')
+    return route.fulfill({ json: {
+      uuid, name: uuid, updated_at: updated,
+      chat_messages: [{ uuid: 'message', sender: 'assistant', content: [{ type: 'text', text: 'Shared Claude body' }], files: [{
+        file_uuid: '44444444-4444-4444-8444-444444444444', file_kind: 'document', file_name: 'report.txt', document_asset: { url: '/api/shared/report' },
+      }] }],
+    } })
+  })
+  try {
+    await page.goto(`https://claude.ai/chat/${id}`)
+    await page.addScriptTag({ content: source })
+    await page.locator('[data-inkstone] .fab.in').waitFor()
+    await page.locator('[data-inkstone] .fab').click()
+    const first = await exportAll(page)
+    assert.equal(assetAttempts, 1, 'Claude 单并发的三个对话共享失败结果，本批次只尝试一次')
+    assert.equal(JSON.parse(strFromU8(first['_failures.json'])).length, 3)
+    assert.equal(Object.keys(first).filter((path) => path.endsWith('.md')).length, 3)
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('inkstone:wm:claude:markdown'))), {})
+    assetAvailable = true
+    const second = await exportAll(page)
+    assert.equal(assetAttempts, 2, '下一次增量导出必须重新尝试，不得复用上一批次的失败结果')
+    assert.equal(second['_failures.json'], undefined)
+    const notes = Object.entries(second).filter(([path]) => path.endsWith('.md'))
+    assert.equal(notes.length, 3)
+    for (const [, bytes] of notes) {
+      assert.match(strFromU8(bytes), /Shared Claude body/)
+      assert.doesNotMatch(strFromU8(bytes), /附件下载失败/)
+    }
+    assert.equal(Object.keys(second).filter((path) => path.includes('/attachments/') && path.endsWith('report.txt')).length, 1)
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('inkstone:wm:claude:markdown'))), Object.fromEntries(sharedIds.map((uuid) => [uuid, updated])))
+    assert.deepEqual(errors, [])
+  } finally {
+    await context.close()
+  }
+  console.log('PASS: 三个 Claude 对话共享失败附件仅请求一次，下一次增量恢复后补齐全部正文与水位线')
+}
+
 try {
   await checkChatGPTAssetRetry()
   await checkChatGPTAssetRetry(false)
+  await checkClaudeSharedAssetRetry()
   const missingAsset = await setup({ assetUnavailable: true, watermark: true })
   await missingAsset.page.locator('[data-inkstone] [data-seg="scope"] button[data-v="all"]').click()
   await missingAsset.page.locator('[data-inkstone] .adv-toggle').click()
