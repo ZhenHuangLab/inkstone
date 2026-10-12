@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "test": "bun test",
-    "test:browser": "bun run build && node scripts/check-export-browser.mjs",
+    "test:browser": "bun run build && node scripts/check-export-browser.mjs && node scripts/check-ui-browser.mjs",
     "typecheck": "tsc --noEmit",
     "offline": "bun cli/export.ts"
   },

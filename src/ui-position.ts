@@ -13,6 +13,8 @@ export interface FabPlacement {
   panelLeft?: number
 }
 
+export type HeaderPlacement = 'beside' | 'inset' | 'below'
+
 /**
  * 把页面锚点换算成 fixed FAB 的 right / bottom。
  *
@@ -25,6 +27,7 @@ export function computeFabPlacement(
   viewport: { width: number; height: number },
   size: number,
   gap: number,
+  headerPlacement: HeaderPlacement = 'beside',
 ): FabPlacement | null {
   if (
     !Number.isFinite(rect.top) ||
@@ -46,8 +49,22 @@ export function computeFabPlacement(
 
   if (mode === 'header') {
     if (rect.top < 0) return null
+    // 密集顶栏没有按钮宽度和边距时，放在控件下方；只钳制 x 会盖住最左控件。
+    if (headerPlacement === 'below' || (headerPlacement === 'beside' && rect.left - gap - size < 8)) {
+      return {
+        right: 8,
+        bottom: Math.round(viewport.height - rect.bottom - gap - size),
+        panelTop: Math.round(rect.bottom + gap + size + 10),
+      }
+    }
+    // 新会话的某些 ChatGPT 变体没有 Share/Profile 等右侧动作，adapter 会把
+    // 完整顶栏作为兜底锚点并明确指定 inset；宽动作组仍贴左侧，不按宽度猜测。
+    const right =
+      headerPlacement === 'inset'
+        ? Math.max(8, Math.round(viewport.width - rect.right + 8))
+        : Math.round(viewport.width - rect.left + gap)
     return {
-      right: Math.round(viewport.width - rect.left + gap),
+      right,
       bottom: Math.round(viewport.height - rect.bottom + (rect.height - size) / 2),
       panelTop: Math.round(rect.bottom + 10),
     }

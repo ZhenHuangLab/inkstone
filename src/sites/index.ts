@@ -10,6 +10,7 @@ export type {
   SiteAdapter,
   SiteBatch,
   SiteConversationItem,
+  SiteHeaderAnchor,
   SiteId,
   SiteIRContextResolver,
   SitePager,

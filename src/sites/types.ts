@@ -4,6 +4,7 @@
 import type { AssetRef, IRConversation } from '../core/ir'
 import type { CancelToken, FetchStats } from '../core/fetcher'
 import type { BatchPolicy } from '../core/batch-safety'
+import type { HeaderPlacement } from '../ui-position'
 
 export type SiteId = 'chatgpt' | 'claude'
 
@@ -16,10 +17,15 @@ export interface AssetPayload {
 
 export type Rgb = [number, number, number]
 
+export interface SiteHeaderAnchor {
+  element: HTMLElement
+  placement: HeaderPlacement
+}
+
 /** 站点专属的界面锚定与配色探测——唯一需要认识对方 DOM 的地方。 */
 export interface SiteUi {
-  /** 顶栏锚点（贴在分享按钮左侧，面板向下展开）；找不到返回 null */
-  headerAnchor(): HTMLElement | null
+  /** 一次选择返回锚点与定位方式；完整顶栏用 inset，密集控件无空位时用 below。 */
+  headerAnchor(): SiteHeaderAnchor | null
   /** 输入框锚点（贴在输入框旁，面板向上展开）；找不到返回 null */
   composerAnchor(): HTMLElement | null
   /** 页面是否处于暗色 */

@@ -101,15 +101,17 @@ export const claudeAdapter: SiteAdapter = {
     // 左边界才不会盖住 Files。2026-08-29 首页 /new 没有 wiggle 控件，但有稳定的
     // dframe-header-actions-slot（当前承载隐身模式按钮），同样锚定整组左边界。
     // 旧选择器继续留作回退，兼容 Claude 的灰度发布。
-    headerAnchor: () =>
-      (document.querySelector('[data-testid="wiggle-controls-actions-group"]') ??
+    headerAnchor: () => {
+      const element = (document.querySelector('[data-testid="wiggle-controls-actions-group"]') ??
         document.querySelector('[data-testid="wiggle-controls-actions"]') ??
         document.querySelector('[data-testid="wiggle-controls-actions-share"]') ??
         document.querySelector('#dframe-header-actions-slot') ??
         document.querySelector('[data-testid="share-button"]') ??
         document.querySelector('[data-testid="chat-menu-trigger"]') ??
         document.querySelector('header button[aria-haspopup="menu"]') ??
-        document.querySelector('[data-testid="chat-title-split"]')) as HTMLElement | null,
+        document.querySelector('[data-testid="chat-title-split"]')) as HTMLElement | null
+      return element ? { element, placement: 'beside' } : null
+    },
 
     composerAnchor: () =>
       ((() => {

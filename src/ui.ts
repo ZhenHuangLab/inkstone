@@ -1,5 +1,5 @@
 import { sanitizeSubdir } from './core/render'
-import type { SiteUi } from './sites'
+import type { SiteHeaderAnchor, SiteUi } from './sites'
 import { computeFabPlacement } from './ui-position'
 
 export type ExportFormat = 'markdown' | 'json'
@@ -99,6 +99,11 @@ export interface PanelCallbacks {
 // 高光扫过用纯 transform 位移；不用色差/SVG morphing/hue-rotate 这类高开销滤镜。
 const STYLE = `
   :host { all: initial; }
+  :host([data-site="chatgpt"]) {
+    /* ChatGPT 顶栏 surface 建立独立层叠上下文；仅此站点需要最高层 overlay。 */
+    position: fixed; left: 0; top: 0; width: 0; height: 0; overflow: visible;
+    z-index: 2147483647; isolation: isolate; pointer-events: none;
+  }
   :host {
     --fg: #0d0d0d; --muted: #5d5d63;
     --glass: rgba(255, 255, 255, .62); --solid: #f7f7f8;
@@ -150,6 +155,7 @@ const STYLE = `
     /* right/bottom 过渡只在布局变化的一瞬生效（侧栏开合、输入框长高），平时零开销 */
     transition: transform .15s var(--ease), background-color .2s var(--ease), color .2s var(--ease),
       right .25s var(--ease), bottom .25s var(--ease);
+    pointer-events: auto;
   }
   .fab.in { visibility: visible; animation: pop .3s var(--ease); }
   @keyframes pop { from { opacity: 0; transform: scale(.5); } }
@@ -180,6 +186,19 @@ const STYLE = `
     width: var(--header-fab-size, 36px); height: var(--header-fab-size, 36px); border-radius: 8px;
     background: transparent; border-color: transparent; box-shadow: none;
     -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
+    /* 缩放后旧坐标可能已在视口外，顶栏定位直接到位，不沿旧坐标过渡。 */
+    transition: background-color .2s var(--ease), color .2s var(--ease);
+  }
+  /* ChatGPT 新顶栏本身是全宽 surface；给入口一层轻底色，避免图标与 surface 融在一起。 */
+  :host([data-site="chatgpt"][data-pos="header"]) .fab {
+    background: var(--hover); border-color: var(--border); box-shadow: inset 0 1px 0 var(--edge);
+  }
+  :host([data-site="chatgpt"][data-pos="header"][data-theme="dark"]) .fab:not(.open) {
+    color: #fff; background: rgba(255, 255, 255, .14); border-color: rgba(255, 255, 255, .2);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 2px 8px rgba(0, 0, 0, .24);
+  }
+  :host([data-site="chatgpt"][data-pos="header"][data-theme="dark"]) .fab:not(.open):hover {
+    background: rgba(255, 255, 255, .21);
   }
   :host([data-pos="header"]) .fab.in { animation: fadein .2s var(--ease); }
   :host([data-pos="header"]) .fab:hover { background: var(--hover); transform: none; }
@@ -204,6 +223,7 @@ const STYLE = `
     max-width: calc(100vw - 32px);
     transform-origin: 100% 100%;
     transition: left .25s var(--ease), right .25s var(--ease), bottom .25s var(--ease);
+    pointer-events: auto;
   }
   .panel.open { display: block; animation: rise .22s var(--ease); }
   @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(.97); } }
@@ -217,8 +237,11 @@ const STYLE = `
   /* header 模式：面板从按钮下方展开 */
   :host([data-pos="header"]) .panel {
     bottom: auto; top: var(--panel-top, 56px);
+    /* 宽动作组会把按钮推向左侧；304px 面板仍需保留两侧至少 16px 的视口边距。 */
+    right: clamp(16px, var(--fab-right, 20px), calc(100vw - 304px - 16px));
     max-height: min(72vh, calc(100vh - var(--panel-top, 56px) - 24px));
     transform-origin: 100% 0;
+    transition: none;
   }
   :host([data-pos="header"]) .panel.open { animation-name: drop; }
   @keyframes drop { from { opacity: 0; transform: translateY(-10px) scale(.97); } }
@@ -384,6 +407,31 @@ export function mountPanel(cb: PanelCallbacks): void {
   if (document.querySelector('[data-inkstone]')) return
   const host = document.createElement('div')
   host.dataset['inkstone'] = ''
+  host.dataset['site'] = cb.site.id
+  // document author styles can override shadow :host declarations. ChatGPT 新顶栏用一块
+  // 全宽 surface 建立自己的层叠上下文，因此宿主必须在 light DOM 侧成为最高层 overlay。
+  // 宿主本身不接收指针，shadow 内的按钮/面板单独恢复 pointer-events。
+  // Claude 沿用非定位 host，让 40/41 的子元素参与页面层叠。fixed + z-index:auto
+  // 也会创建层叠上下文，不能只降低 host 的 z-index。
+  if (cb.site.id === 'chatgpt') {
+    for (const [name, value] of [
+      ['position', 'fixed'],
+      ['left', '0'],
+      ['top', '0'],
+      ['width', '0'],
+      ['height', '0'],
+      ['display', 'block'],
+      ['overflow', 'visible'],
+      ['visibility', 'visible'],
+      ['opacity', '1'],
+      ['pointer-events', 'none'],
+      ['z-index', '2147483647'],
+      ['isolation', 'isolate'],
+      ['transform', 'none'],
+    ] as const) {
+      host.style.setProperty(name, value, 'important')
+    }
+  }
   const root = host.attachShadow({ mode: 'open' })
 
   // —— 主色跟随当前页面 ——
@@ -483,12 +531,14 @@ export function mountPanel(cb: PanelCallbacks): void {
   }
 
   // 跟随页面的明暗与主题色设置（判定方式由站点适配器给）
-  const syncTheme = () => {
-    host.dataset['theme'] = cb.siteUi.isDark() ? 'dark' : 'light'
-    detectAccent(true) // 明暗/主题色切换时 accent 值跟着变
+  const syncTheme = (forceAccent = true) => {
+    const nextTheme = cb.siteUi.isDark() ? 'dark' : 'light'
+    const changed = host.dataset['theme'] !== nextTheme
+    host.dataset['theme'] = nextTheme
+    detectAccent(forceAccent || changed) // 明暗/主题色切换时 accent 值跟着变
   }
   syncTheme()
-  new MutationObserver(syncTheme).observe(document.documentElement, {
+  new MutationObserver(() => syncTheme(true)).observe(document.documentElement, {
     attributes: true,
     attributeFilter: cb.siteUi.themeAttributes,
   })
@@ -613,8 +663,8 @@ export function mountPanel(cb: PanelCallbacks): void {
   //   header：贴顶栏 Share 按钮左侧（没有 Share 时贴 header 动作区），面板向下展开（幽灵钮）。
   // 没有默认位置：找不到锚点就不出现；锚点短暂消失（切换会话会卸载重挂）位置冻结原地，
   // 消失 4s+（设置页/改版）才整体隐藏——绝不回退到固定角落。
-  // 开销：ResizeObserver 只在锚点尺寸变化时触发；轮询每次一个 querySelector +
-  // getBoundingClientRect，样式仅在数值变化时写入。
+  // 视口或锚点尺寸改变时重选；维护轮询每 500ms 读取绑定矩形，每 2s 重找锚点。
+  // 样式仅在数值变化时写入。
   let mode: 'composer' | 'header' = cb.settings.values.fabPos
   host.dataset['pos'] = mode
   // Claude 顶栏原生动作实测为 28px；ChatGPT 保持原有 36px。
@@ -626,9 +676,13 @@ export function mountPanel(cb: PanelCallbacks): void {
   let curBottom = -1
   let curPanelTop = -1
   let curPanelLeft = -1
-  const findAnchor = (): HTMLElement | null =>
-    mode === 'header' ? cb.siteUi.headerAnchor() : cb.siteUi.composerAnchor()
+  const findAnchor = (): SiteHeaderAnchor | null => {
+    if (mode === 'header') return cb.siteUi.headerAnchor()
+    const element = cb.siteUi.composerAnchor()
+    return element ? { element, placement: 'beside' } : null
+  }
   let anchor: HTMLElement | null = null
+  let headerPlacement: SiteHeaderAnchor['placement'] = 'beside'
   const syncPos = (): boolean => {
     if (!anchor?.isConnected) return false // 没有锚点：位置保持原样，藏与不藏由 rebindAnchor 决定
     const r = anchor.getBoundingClientRect()
@@ -638,6 +692,7 @@ export function mountPanel(cb: PanelCallbacks): void {
       { width: window.innerWidth, height: window.innerHeight },
       fabSize(),
       fabGap(),
+      headerPlacement,
     )
     if (!placement) return false
     if (placement.panelTop != null && placement.panelTop !== curPanelTop) {
@@ -667,20 +722,25 @@ export function mountPanel(cb: PanelCallbacks): void {
     fab.classList.remove('in')
     closePanel()
   }
-  const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(syncPos)
-  let anchorMissing = 0
+  const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => rebindAnchor())
+  let anchorMissingSince: number | null = null
   const rebindAnchor = (): boolean => {
-    const c = findAnchor()
-    if (c !== anchor) {
+    const target = findAnchor()
+    const c = target?.element ?? null
+    const placement = target?.placement ?? 'beside'
+    if (c !== anchor || placement !== headerPlacement) {
+      if (anchor) closePanel()
       ro?.disconnect()
       anchor = c
+      headerPlacement = placement
       if (c) ro?.observe(c)
     }
     if (anchor?.isConnected) {
-      anchorMissing = 0
+      anchorMissingSince = null
       return syncPos()
-    } else if (++anchorMissing >= 2) {
-      hideFab() // 连续两轮（约 4s）没有锚点：整个入口隐藏
+    } else {
+      anchorMissingSince ??= Date.now()
+      if (Date.now() - anchorMissingSince >= 4000) hideFab()
     }
     return false
   }
@@ -706,18 +766,24 @@ export function mountPanel(cb: PanelCallbacks): void {
     else bootDone = true
   }
   boot()
-  window.addEventListener('resize', syncPos, { passive: true })
+  // 视口或锚点尺寸变化可能跨过顶栏空间阈值，立即重选锚点与定位方式。
+  window.addEventListener('resize', rebindAnchor, { passive: true })
   // 维护期：500ms 纯位置同步（锚点平移不触发 ResizeObserver），2s 一次全量重找 + accent 重读；
   // 锚点回来（或迟到）时在这里重新现身
   let tick = 0
+  let pageHref = location.href
   setInterval(() => {
+    if (location.href !== pageHref) {
+      pageHref = location.href
+      closePanel()
+    }
     if (++tick % 4 === 0) {
       const positioned = rebindAnchor()
       if (bootDone && positioned && !fab.classList.contains('in')) {
         detectAccent(true)
         fab.classList.add('in')
       }
-      detectAccent()
+      syncTheme(false)
     } else {
       syncPos()
     }
