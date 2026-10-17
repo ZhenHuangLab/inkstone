@@ -69,6 +69,23 @@ export function mapTextSegmentsOutsideCode(text: string, fn: (segment: string) =
   return out.join('\n')
 }
 
+/**
+ * 单行内的 code span 区间 [start, end)。按 CommonMark 规则配对：开头的反引号串
+ * 只与后面第一个等长的反引号串闭合；找不到闭合的反引号串按普通字符处理。
+ */
+export function inlineCodeSpans(line: string): Array<[start: number, end: number]> {
+  const runs = [...line.matchAll(/`+/g)].map((m) => ({ start: m.index, length: m[0].length }))
+  const spans: Array<[number, number]> = []
+  for (let i = 0; i < runs.length; i++) {
+    const open = runs[i]!
+    const close = runs.findIndex((run, j) => j > i && run.length === open.length)
+    if (close < 0) continue
+    spans.push([open.start, runs[close]!.start + open.length])
+    i = close
+  }
+  return spans
+}
+
 function mapOutsideInlineCode(segment: string, fn: (s: string) => string): string {
   // split 带捕获组：奇数下标是 code span，原样保留
   return segment

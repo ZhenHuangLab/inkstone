@@ -22,6 +22,7 @@
 - `GET /backend-api/conversations?offset&limit=100&order=updated` → 分页对话列表
 - `GET /backend-api/conversation/{id}` → 完整 mapping 树（比官方导出 zip 的 metadata 更全）
 - `GET /backend-api/files/{file_id}/download` → 附件签名 URL → fetch blob
+- `GET /backend-api/conversation/{id}/interpreter/download?message_id&sandbox_path` → 代码解释器生成件（正文 `sandbox:` 链接，message_id 取链接所在消息）的签名 URL
 
 并发 2–3、请求间加抖动延时、429/5xx 指数退避、进度 UI 可暂停/续跑。
 ⚠️ 非官方接口，字段名和路径以实际抓包为准，做好会变动的心理预期。

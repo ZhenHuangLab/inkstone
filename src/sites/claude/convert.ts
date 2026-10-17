@@ -4,6 +4,7 @@
 // 消息是多个 typed block 按序交错（text / thinking / tool_use / tool_result），
 // 所以分发发生在块级而不是消息级。产出的 IR 形态两边完全一致。
 
+import { hashText } from '../../core/hash'
 import type { AssetRef, IRBlock, IRConversation, IRTurn, SourceLink } from '../../core/ir'
 import { toIso, yamlQuote } from '../../core/render'
 import { artifactDocType, blockKey, replayArtifacts, type ArtifactOp } from './artifacts'
@@ -412,15 +413,6 @@ function outputRank(path: string): number {
 
 function hashSandboxFile(conversationId: string, path: string): string {
   return hashText(`${conversationId}\0${normalizePath(path)}`)
-}
-
-function hashText(value: string): string {
-  let hash = 0x811c9dc5
-  for (const ch of value) {
-    hash ^= ch.charCodeAt(0)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
 function toolResultBlock(b: ClaudeContentBlock): IRBlock {

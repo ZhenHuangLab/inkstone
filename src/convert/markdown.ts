@@ -16,9 +16,12 @@ import type { ConversationDetail } from '../types'
 export {
   assetLink,
   assetToken,
+  fillAssetTokens,
   filenameFor,
+  renderAssetOccurrence,
   sanitizeName,
   sanitizeSubdir,
+  type AssetOutcome,
   type ConvertResult,
   type LinkStyle,
 } from '../core/render'

@@ -13,11 +13,12 @@ import {
 } from './core/batch-safety'
 import type { AssetRef } from './core/ir'
 import {
-  assetLink,
-  assetToken,
+  fillAssetTokens,
   filenameFor,
+  renderAssetOccurrence,
   renderConversation,
   sanitizeName,
+  type AssetOutcome,
 } from './core/render'
 import {
   resolveAdapter,
@@ -306,9 +307,10 @@ function createProcessor(
   sink: OutputSink,
   checkBatchSafety?: () => void,
 ) {
-  // fileId → 正文替换文本；同一附件跨对话只下载一次
-  const assetCache = new Map<string, string>()
-  type AssetResolution = { replacement: string; failed: boolean }
+  // fileId → 已确定的结果（落盘或超限跳过）；同一附件跨对话只下载一次。
+  // 只缓存文件级结果：正文链接按每处引用的显示文字另行生成。
+  const assetCache = new Map<string, AssetOutcome>()
+  type AssetResolution = { outcome: AssetOutcome; failed: boolean }
   // 同一遍共享成功、失败及进行中的尝试；下一遍清空，失败结果不跨遍缓存。
   const assetAttempts = new Map<string, Promise<AssetResolution>>()
   const maxFileBytes = opts.maxFileMB * 1024 * 1024
@@ -322,7 +324,7 @@ function createProcessor(
 
   function resolveAsset(a: AssetRef): Promise<AssetResolution> {
     const cached = assetCache.get(a.fileId)
-    if (cached != null) return Promise.resolve({ replacement: cached, failed: false })
+    if (cached != null) return Promise.resolve({ outcome: cached, failed: false })
     let attempt = assetAttempts.get(a.fileId)
     if (!attempt) {
       attempt = downloadAsset(a)
@@ -332,12 +334,12 @@ function createProcessor(
   }
 
   async function downloadAsset(a: AssetRef): Promise<AssetResolution> {
-    let replacement: string
+    let outcome: AssetOutcome
     // 元数据 size 不可靠（library 文件报 0），仅作快速跳过；真正的护栏在 fetchBinary
     const cap = a.kind === 'file' ? maxFileBytes : MAX_IMAGE_BYTES
     if ((a.sizeBytes ?? 0) > cap) {
       assetsSkipped++
-      replacement = skippedNote(a, a.sizeBytes!, cap)
+      outcome = { note: skippedNote(a, a.sizeBytes!, cap) }
     } else {
       try {
         checkBatchSafety?.()
@@ -347,28 +349,25 @@ function createProcessor(
         // 文件落在笔记目录下；标准 Markdown 用相对笔记路径，Wikilink 用 vault 根路径。
         const linkPath = `${attachPrefix}${a.fileId.slice(-8)}-${name}`
         await sink.put(`${notesPrefix}${linkPath}`, bytes, { precompressed: true })
-        replacement = assetLink(opts.linkStyle, assetReferencePath(opts.linkStyle, notesPrefix, linkPath), {
-          embed: a.kind === 'image',
-          label: a.kind === 'image' ? undefined : (a.name ?? name),
-        })
+        outcome = { path: assetReferencePath(opts.linkStyle, notesPrefix, linkPath), fileName: name }
       } catch (e) {
         if (e instanceof CancelledError) throw e
         if (e instanceof BatchSafetyError) throw e
         if (e instanceof SizeLimitError) {
           assetsSkipped++
-          replacement = skippedNote(a, e.actualBytes, cap)
+          outcome = { note: skippedNote(a, e.actualBytes, cap) }
         } else {
           failedAssetIds.add(a.fileId)
           return {
-            replacement: `*(附件下载失败：${a.name ?? a.fileId} — ${String(e)})*`,
+            outcome: { note: `*(附件下载失败：${a.name ?? a.fileId} — ${String(e)})*` },
             failed: true,
           }
         }
       }
     }
     failedAssetIds.delete(a.fileId)
-    assetCache.set(a.fileId, replacement)
-    return { replacement, failed: false }
+    assetCache.set(a.fileId, outcome)
+    return { outcome, failed: false }
   }
 
   /** 完成文案的附件异常后缀（正常时空串）；具体条目见各 .md 内的占位说明。 */
@@ -406,23 +405,26 @@ function createProcessor(
       toolTraces: opts.toolTraces,
       headingMode: opts.headingMode,
     })
-    let md = markdown
-    let assetIdx = 0
+    const replacements: string[] = []
     let assetFailed = false
-    for (const a of assets) {
-      assetIdx++
+    for (const [index, a] of assets.entries()) {
       if (!opts.assets) {
-        md = md.split(assetToken(a.fileId)).join(`*(附件：${a.name ?? a.fileId} — 本次导出关闭了附件下载)*`)
+        replacements.push(
+          renderAssetOccurrence(opts.linkStyle, a, {
+            note: `*(附件：${a.name ?? a.fileId} — 本次导出关闭了附件下载)*`,
+          }),
+        )
         continue
       }
       // 附件多的对话一磨几分钟，进度要有反馈，否则像卡死
-      if (assets.length > 3 && assetIdx % 5 === 0) {
-        panel.setStatus(`「${(item.title || title).slice(0, 14)}」附件 ${assetIdx}/${assets.length}…`)
+      if (assets.length > 3 && (index + 1) % 5 === 0) {
+        panel.setStatus(`「${(item.title || title).slice(0, 14)}」附件 ${index + 1}/${assets.length}…`)
       }
       const result = await resolveAsset(a)
       assetFailed ||= result.failed
-      md = md.split(assetToken(a.fileId)).join(result.replacement)
+      replacements.push(renderAssetOccurrence(opts.linkStyle, a, result.outcome))
     }
+    const md = fillAssetTokens(markdown, replacements)
     if (assetFailed) incompleteReasons.push('附件下载失败')
     const path = `${notesPrefix}${filenameFor(title, item.id)}`
     await sink.put(path, strToU8(md))

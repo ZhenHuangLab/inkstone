@@ -7,6 +7,7 @@ import {
   listProjects,
   projectNameOf,
   resolveFileDownload,
+  resolveSandboxDownload,
   throttleStats,
 } from '../../api'
 import type { AssetRef } from '../../core/ir'
@@ -296,8 +297,11 @@ export const chatgptAdapter: SiteAdapter = {
     cancel?: CancelToken,
     maxBytes?: number,
   ): Promise<AssetPayload> {
-    // ChatGPT 的附件要先用 file id 换一个签名下载地址（fn 参数带原始文件名）
-    const target = await resolveFileDownload(session, ref.fileId, cancel)
+    // ChatGPT 的附件要先换签名下载地址：上传件与生成图片按 file id 换；
+    // 代码解释器生成件没有 file id，转换层已给出 interpreter/download 地址
+    const target = ref.url
+      ? await resolveSandboxDownload(session, ref.url, cancel)
+      : await resolveFileDownload(session, ref.fileId, cancel)
     const { bytes, contentType } = await fetchBinary(target.url, cancel, maxBytes)
     return { bytes, filename: target.filename, contentType }
   },

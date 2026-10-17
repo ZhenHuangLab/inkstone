@@ -19,12 +19,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { basename, join, resolve } from 'node:path'
 import { unzipSync } from 'fflate'
 import {
-  assetLink,
-  assetToken,
   conversationToMarkdown,
+  fillAssetTokens,
   filenameFor,
+  renderAssetOccurrence,
   sanitizeName,
   sanitizeSubdir,
+  type AssetOutcome,
   type AssetRef,
   type ConvertOptions,
   type LinkStyle,
@@ -273,6 +274,7 @@ if (branchesRestored > 0) console.log(`恢复 ${branchesRestored} 条 Branch 对
 interface Pending {
   path: string
   markdown: string
+  /** 每处附件引用一项，与正文占位一一对应 */
   assets: AssetRef[]
   title: string
 }
@@ -290,7 +292,8 @@ for (const [id, conv] of convById) {
   pending.push({ path: join(args.notesDir, filenameFor(title, id)), markdown, assets, title })
   for (const a of assets) {
     if (!assetRefs.has(a.fileId)) assetRefs.set(a.fileId, a)
-    ;(assetUsedBy.get(a.fileId) ?? assetUsedBy.set(a.fileId, []).get(a.fileId)!).push(title)
+    const usedBy = assetUsedBy.get(a.fileId) ?? assetUsedBy.set(a.fileId, []).get(a.fileId)!
+    if (usedBy[usedBy.length - 1] !== title) usedBy.push(title)
   }
   if (++done % 100 === 0) console.log(`转换 ${done}/${convById.size} …`)
 }
@@ -315,8 +318,8 @@ if (args.assets) {
 mkdirSync(join(args.out, args.notesDir), { recursive: true })
 if (entryByAsset.size > 0) mkdirSync(join(args.out, args.notesDir, args.attachmentsDir), { recursive: true })
 
-// fileId → 正文替换文本
-const replacements = new Map<string, string>()
+// fileId → 处理结果（落盘路径或说明）；正文按每处引用的显示文字分别生成
+const outcomes = new Map<string, AssetOutcome>()
 const missing: Array<{ fileId: string; name: string | null; usedBy: string[] }> = []
 
 if (args.assets) {
@@ -336,34 +339,28 @@ if (args.assets) {
       // 链接相对 .md 所在目录，落盘再套上笔记目录前缀（与油猴端同规则）
       const linkPath = `${args.attachmentsDir ? `${args.attachmentsDir}/` : ''}${fileId.slice(-8)}-${name}`
       writeFileSync(join(args.out, args.notesDir, linkPath), bytes)
-      replacements.set(
-        fileId,
-        assetLink(args.linkStyle, linkPath, { embed: a.kind === 'image', label: a.name ?? name }),
-      )
+      outcomes.set(fileId, { path: linkPath, fileName: name })
     }
     if (ids.length > BATCH) console.log(`附件 ${Math.min(i + BATCH, ids.length)}/${ids.length} …`)
   }
 }
 
 for (const [fileId, a] of assetRefs) {
-  if (replacements.has(fileId)) continue
+  if (outcomes.has(fileId)) continue
   if (!args.assets) {
-    replacements.set(fileId, `*(附件：${a.name ?? fileId} — 本次导出关闭了附件下载)*`)
+    outcomes.set(fileId, { note: `*(附件：${a.name ?? fileId} — 本次导出关闭了附件下载)*` })
   } else {
     missing.push({ fileId, name: a.name ?? assetNameByDat[`${fileId}.dat`] ?? null, usedBy: assetUsedBy.get(fileId) ?? [] })
-    replacements.set(
-      fileId,
-      `*(附件不在官方导出包里：${a.name ?? fileId}，服务端可能已过期或删除)*`,
-    )
+    outcomes.set(fileId, { note: `*(附件不在官方导出包里：${a.name ?? fileId}，服务端可能已过期或删除)*` })
   }
 }
 
 // 回填占位符并落盘
 for (const p of pending) {
-  let md = p.markdown
-  for (const a of p.assets) {
-    md = md.split(assetToken(a.fileId)).join(replacements.get(a.fileId) ?? '')
-  }
+  const md = fillAssetTokens(
+    p.markdown,
+    p.assets.map((a) => renderAssetOccurrence(args.linkStyle, a, outcomes.get(a.fileId)!)),
+  )
   writeFileSync(join(args.out, p.path), md)
 }
 

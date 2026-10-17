@@ -291,6 +291,29 @@ export interface FileDownloadTarget {
   filename: string | null
 }
 
+/** files/download 与 interpreter/download 共用的响应字段。 */
+interface DownloadInfo {
+  status?: string
+  download_url?: string
+  file_name?: string | null
+  [k: string]: unknown
+}
+
+function downloadTarget(data: DownloadInfo, endpoint: string): FileDownloadTarget {
+  if (!data.download_url) {
+    throw new Error(`${endpoint} 未返回 download_url：${JSON.stringify(data).slice(0, 200)}`)
+  }
+  let filename = data.file_name || null
+  if (!filename) {
+    try {
+      filename = new URL(data.download_url, location.origin).searchParams.get('fn')
+    } catch {
+      /* 签名地址解析失败不致命 */
+    }
+  }
+  return { url: data.download_url, filename }
+}
+
 /** 换取附件的签名下载地址（对 sediment:// 图片与用户上传文件均有效，fn 参数带原始文件名）。 */
 export async function resolveFileDownload(
   token: string,
@@ -302,15 +325,21 @@ export async function resolveFileDownload(
     { headers: auth(token) },
     cancel,
   )
-  const data = (await res.json()) as { status?: string; download_url?: string }
-  if (!data.download_url) throw new Error(`files/${fileId}/download 未返回 download_url`)
-  let filename: string | null = null
-  try {
-    filename = new URL(data.download_url, location.origin).searchParams.get('fn')
-  } catch {
-    /* 签名地址解析失败不致命 */
-  }
-  return { url: data.download_url, filename }
+  return downloadTarget((await res.json()) as DownloadInfo, `files/${fileId}/download`)
+}
+
+/**
+ * 代码解释器生成件（正文里的 sandbox: 链接）换签名下载地址。path 是转换层给出的
+ * `/backend-api/conversation/<会话>/interpreter/download?message_id=…&sandbox_path=…`。
+ * 沙箱会话结束前没有转存的文件会永久丢失，此时请求失败，错误原样写进附件说明。
+ */
+export async function resolveSandboxDownload(
+  token: string,
+  path: string,
+  cancel?: CancelToken,
+): Promise<FileDownloadTarget> {
+  const res = await fetcher.request(new URL(path, location.origin).href, { headers: auth(token) }, cancel)
+  return downloadTarget((await res.json()) as DownloadInfo, 'interpreter/download')
 }
 
 export function fetchBinary(

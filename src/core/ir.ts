@@ -16,18 +16,27 @@ export interface SourceLink {
 }
 
 export interface AssetRef {
+  /** 文件身份：下载与落盘按它去重；同一文件在正文里可以出现多次 */
   fileId: string
   kind: 'image' | 'file'
   name?: string
+  /** 正文行内链接的原显示文字（纯文本）；同一文件的不同引用处可以各不相同 */
+  label?: string
   sizeBytes?: number
   mime?: string
-  /** 站点特定的下载线索：ChatGPT 走 files 接口换签名 URL，Claude 直接给同源地址 */
+  /**
+   * 站点特定的下载线索：ChatGPT 上传件走 files 接口（无 url），代码解释器生成件给
+   * interpreter/download 地址；Claude 直接给同源地址
+   */
   url?: string
 }
 
 export type IRBlock =
-  /** 正文：走公式 + 标题变换管道。sources 在块被渲染时并入文末汇总 */
-  | { kind: 'prose'; text: string; sources?: SourceLink[] }
+  /**
+   * 正文：走公式 + 标题变换管道。sources 在块被渲染时并入文末汇总。
+   * assets 是正文里的行内附件链接：text 中以 inlineAssetMarker(i) 占住 assets[i] 的位置。
+   */
+  | { kind: 'prose'; text: string; sources?: SourceLink[]; assets?: AssetRef[] }
   /** 思维链：受 thoughts 开关控制，渲染为折叠 callout。关掉时其 sources 也不收集 */
   | { kind: 'thinking'; items: Array<{ summary?: string; text: string }>; sources?: SourceLink[] }
   /**
@@ -54,6 +63,19 @@ export type IRBlock =
   | { kind: 'note'; text: string }
   /** 未识别内容的兜底：原始 JSON 塞进折叠 callout，永不静默丢内容 */
   | { kind: 'raw'; label: string; json: unknown }
+
+// 行内附件占位用私有区码点界定，公式与标题变换都不会改动它们。生产方须保证原文
+// 不含这两个码点（ChatGPT 的引用还原会剥离全部私有区字符）。源码里不写不可见字面量。
+const MARKER_OPEN = String.fromCharCode(0xe010)
+const MARKER_CLOSE = String.fromCharCode(0xe011)
+const MARKER = new RegExp(`${MARKER_OPEN}(\\d+)${MARKER_CLOSE}`, 'g')
+
+export const inlineAssetMarker = (index: number): string => `${MARKER_OPEN}${index}${MARKER_CLOSE}`
+
+/** 把 prose 文本里的行内附件占位逐个换成 replace(index) 的结果。 */
+export function replaceInlineAssetMarkers(text: string, replace: (index: number) => string): string {
+  return text.replace(MARKER, (_marker, index: string) => replace(Number(index)))
+}
 
 export interface IRTurn {
   role: 'user' | 'assistant'

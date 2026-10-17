@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { assetLink, conversationToMarkdown, filenameFor, sanitizeSubdir } from '../src/convert/markdown'
+import { assetLink, assetToken, conversationToMarkdown, filenameFor, sanitizeSubdir } from '../src/convert/markdown'
 import type { ConversationDetail } from '../src/types'
 import fixtureJson from './fixtures/basic.json'
 
@@ -180,15 +180,15 @@ describe('附件与引用（P2）', () => {
     },
   }
   const result = conversationToMarkdown(conv as unknown as ConversationDetail)
+  const tokenOf = (fileId: string) => assetToken(result.assets.findIndex((a) => a.fileId === fileId))
 
   test('图片 part → 占位符 + assets 登记', () => {
-    expect(result.markdown).toContain('%%INKSTONE-ASSET-file_img123%%')
+    expect(result.markdown).toContain(tokenOf('file_img123'))
     expect(result.assets.some((a) => a.fileId === 'file_img123' && a.kind === 'image')).toBe(true)
   })
 
   test('上传附件登记；已内联的图片不重复列出', () => {
-    expect(result.markdown).toContain('%%INKSTONE-ASSET-file_doc456%%')
-    expect(result.markdown.split('%%INKSTONE-ASSET-file_img123%%').length - 1).toBe(1)
+    expect(result.markdown).toContain(tokenOf('file_doc456'))
     expect(result.assets.filter((a) => a.fileId === 'file_img123')).toHaveLength(1)
   })
 

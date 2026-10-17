@@ -16,8 +16,10 @@ import type {
   Message,
   MessageContent,
 } from '../../types'
+import { extractSandboxLinks } from './sandbox'
 
 interface Ctx {
+  conversationId: string
   /** msgId → 重放成功的 Canvas 操作；重放失败的 canmore 消息走原始 JSON 兜底 */
   canvas: Map<string, CanvasOp>
 }
@@ -40,7 +42,7 @@ export function conversationToIR(
   const modelSlugs = [...new Set(rawSlugs)]
   const model = rawSlugs[rawSlugs.length - 1] ?? conv.default_model_slug
 
-  const ctx: Ctx = { canvas: replayCanvas(messages) }
+  const ctx: Ctx = { conversationId: convId, canvas: replayCanvas(messages) }
   const turns: IRTurn[] = groupTurns(messages).map((t) => ({
     role: t.role,
     blocks: t.messages.flatMap((m) => messageBlocks(m, ctx)),
@@ -86,6 +88,7 @@ function messageBlocks(msg: Message, ctx: Ctx): IRBlock[] {
   const refs = msg.metadata?.content_references
   const blocks: IRBlock[] = []
   const inlineImageIds = new Set<string>()
+  const prose = (raw: string): IRBlock => proseBlock(raw, refs, msg, ctx)
 
   // canmore 工具的确认回执（role=tool）：内容已由重放侧呈现，不重复
   if (msg.author.role === 'tool' && (msg.author.name ?? '').startsWith('canmore.')) return []
@@ -114,7 +117,7 @@ function messageBlocks(msg: Message, ctx: Ctx): IRBlock[] {
           body: stripResidualMarkers(raw),
         })
       } else {
-        blocks.push(proseBlock(raw, refs))
+        blocks.push(prose(raw))
       }
       break
     }
@@ -122,7 +125,7 @@ function messageBlocks(msg: Message, ctx: Ctx): IRBlock[] {
     case 'multimodal_text':
       for (const p of c.parts ?? []) {
         if (typeof p === 'string') {
-          blocks.push(proseBlock(p, refs))
+          blocks.push(prose(p))
         } else {
           const { block, fileId } = imageAssetBlock(p)
           blocks.push(block)
@@ -182,9 +185,17 @@ function messageBlocks(msg: Message, ctx: Ctx): IRBlock[] {
   return blocks
 }
 
-function proseBlock(raw: string, refs: ContentReference[] | undefined): IRBlock {
+/**
+ * 正文：先还原引用，再把助手消息里的 sandbox 链接（代码解释器生成件）转成行内附件。
+ * 下载接口按链接所在消息定位文件，所以只认助手自己写出的链接。
+ */
+function proseBlock(raw: string, refs: ContentReference[] | undefined, msg: Message, ctx: Ctx): IRBlock {
   const { text, sources } = restoreCitations(raw, refs)
-  return { kind: 'prose', text, sources }
+  if (msg.author.role !== 'assistant') return { kind: 'prose', text, sources }
+  const links = extractSandboxLinks(text, ctx.conversationId, msg.id)
+  return links.assets.length > 0
+    ? { kind: 'prose', text: links.text, sources, assets: links.assets }
+    : { kind: 'prose', text, sources }
 }
 
 /** Canvas 操作的呈现：终稿整块嵌入，中间版本一行说明。 */

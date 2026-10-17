@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { renderConversation } from '../src/core/render'
+import { assetToken, renderConversation } from '../src/core/render'
 import { replayArtifacts } from '../src/sites/claude/artifacts'
 import { conversationToIR, linearize } from '../src/sites/claude/convert'
 import type { ClaudeConversation, ClaudeMessage, ClaudeSandboxFile } from '../src/sites/claude/types'
@@ -240,8 +240,8 @@ describe('附件', () => {
     expect(first.every((asset) => /^[a-z0-9-]+$/i.test(asset.fileId))).toBe(true)
   })
   test('图片留占位符，文本抽取件整块内联', () => {
-    const out = md(fixture)
-    expect(out).toContain('%%INKSTONE-ASSET-img-1%%')
+    const { markdown: out, assets } = renderConversation(conversationToIR(fixture, 'fallback'))
+    expect(out).toContain(assetToken(assets.findIndex((a) => a.fileId === 'img-1')))
     expect(out).toContain('> [!abstract] 附件 · 说明.md（文本抽取）')
     // 附件自带的标题被降级并包在 callout 里，不污染文档大纲
     expect(out).toContain('> ## 附件自带的标题')

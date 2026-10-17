@@ -9,7 +9,14 @@
 import { mapTextSegmentsOutsideCode } from '../convert/codeaware'
 import { transformHeadings, type HeadingMode } from '../convert/headings'
 import { convertMath } from '../convert/math'
-import type { AssetRef, IRBlock, IRConversation, IRTurn, SourceLink } from './ir'
+import {
+  replaceInlineAssetMarkers,
+  type AssetRef,
+  type IRBlock,
+  type IRConversation,
+  type IRTurn,
+  type SourceLink,
+} from './ir'
 
 export interface ConvertOptions {
   /** 是否把思维链写入导出，默认不写入（打开后折叠 callout） */
@@ -23,7 +30,10 @@ export interface ConvertOptions {
 export interface ConvertResult {
   markdown: string
   title: string
-  /** 正文里以 assetToken 占位，待下载后由调用方替换成真实链接 */
+  /**
+   * 每处附件引用一项，按出现顺序：第 i 项在正文里占位为 assetToken(i)，
+   * 由调用方下载后用 fillAssetTokens 回填。同一文件可出现多次（fileId 相同）。
+   */
   assets: AssetRef[]
 }
 
@@ -45,8 +55,25 @@ export function assetLink(
   return `[[${path}${alias ? `|${alias}` : ''}]]`
 }
 
-/** 附件占位符：转换层不做网络请求，下载与链接改写由调用方完成。 */
-export const assetToken = (fileId: string): string => `%%INKSTONE-ASSET-${fileId}%%`
+/** 附件占位符（第 index 处引用）：转换层不做网络请求，下载与链接改写由调用方完成。 */
+export const assetToken = (index: number): string => `%%INKSTONE-ASSET-${index}%%`
+
+/** 一次回填全部占位：replacements[i] 对应 ConvertResult.assets[i]。单遍替换，回填内容不会被再次解析。 */
+export function fillAssetTokens(markdown: string, replacements: readonly string[]): string {
+  return markdown.replace(/%%INKSTONE-ASSET-(\d+)%%/g, (token, index: string) => replacements[Number(index)] ?? token)
+}
+
+/** 一个文件的处理结果：已落盘（链接路径 + 文件名）或一段说明（跳过、失败、缺失）。 */
+export type AssetOutcome = { path: string; fileName: string } | { note: string }
+
+/** 一处附件引用的最终正文：落盘的给链接，其余给说明；行内引用保留原链接文字。 */
+export function renderAssetOccurrence(style: LinkStyle, ref: AssetRef, outcome: AssetOutcome): string {
+  if ('note' in outcome) return ref.label ? `${ref.label} ${outcome.note}` : outcome.note
+  return assetLink(style, outcome.path, {
+    embed: ref.kind === 'image',
+    label: ref.label ?? (ref.kind === 'image' ? undefined : (ref.name ?? outcome.fileName)),
+  })
+}
 
 // 控制字符用码点构造，避免源码里出现不可见字面量
 const CONTROL_CHARS = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(31)}]`, 'g')
@@ -85,6 +112,10 @@ export function renderConversation(conv: IRConversation, copts: ConvertOptions =
 
   const sources: SourceLink[] = []
   const assets: AssetRef[] = []
+  const assetAt = (ref: AssetRef): string => {
+    assets.push(ref)
+    return assetToken(assets.length - 1)
+  }
   // ChatGPT 的正文用 \(...\) / \[...\] 表示公式，因此裸 "$123" 可以安全按货币转义；
   // Claude 会直接输出 $...$，数字开头的原生公式不能套这条规则。
   const prose = (text: string): string =>
@@ -92,10 +123,17 @@ export function renderConversation(conv: IRConversation, copts: ConvertOptions =
 
   const renderBlock = (b: IRBlock): string | null => {
     switch (b.kind) {
-      case 'prose':
+      case 'prose': {
         // 空正文也要收 sources：原文可能只剩引用标记，还原后为空但来源真实存在
         if (b.sources) sources.push(...b.sources)
-        return prose(b.text)
+        const text = prose(b.text)
+        const inline = b.assets
+        if (!inline) return text
+        return replaceInlineAssetMarkers(text, (i) => {
+          const ref = inline[i]
+          return ref ? assetAt(ref) : ''
+        })
+      }
 
       case 'thinking': {
         if (!thoughts) return null
@@ -119,12 +157,10 @@ export function renderConversation(conv: IRConversation, copts: ConvertOptions =
       }
 
       case 'asset':
-        assets.push(b.ref)
-        return assetToken(b.ref.fileId)
+        return assetAt(b.ref)
 
       case 'assetList':
-        assets.push(...b.refs)
-        return b.refs.map((r) => `- ${assetToken(r.fileId)}`).join('\n')
+        return b.refs.map((r) => `- ${assetAt(r)}`).join('\n')
 
       case 'note':
         return b.text
